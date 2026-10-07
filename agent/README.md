@@ -1,7 +1,7 @@
-# agent/ — bridged-agent daemon (agentd) v0
+# agent/ — PolyDaemon agent daemon (agentd) v0
 
 Per-machine daemon: runs Codex windows (the Codex app-server behind
-`clients/tg-codex.sh`) and is the local backend for a desktop board that is still
+`clients/polydaemon-codex.sh`) and is the local backend for a desktop board that is still
 in the works. Watches the
 plugins' local registry (`~/.tg-bridge-channel/instances.json`), tails Claude
 Code JSONL transcripts, detects orphaned channel-plugin processes and stale
@@ -40,7 +40,7 @@ All except `/v1/health` require `Authorization: Bearer <auth_token>`.
 | `WS /v1/events` | live tail of every live window's newest transcript, normalized events `{window_key, ts, kind: message\|thought\|tool_call\|tool_result\|other, role?, text?, tool?, detail?}`, one JSON object per frame (ndjson-compatible). Auth: Bearer header or `?token=` |
 | `GET /v1/windows/{key}/transcript?since=&limit=` | history pages from the same JSONL. `key` = instance_name; `since` = ISO-8601 or unix epoch; `limit` ≤ 1000 (default 100). Returns `next_since` for the following page |
 | `POST /v1/send` | `{window_key, text}` → the window plugin's `POST /message` (Bearer from the registry row), sender marked `chat_id/user_id = 'board'` |
-| `POST /v1/launch` | `{workspace_path, name?}` → opens Terminal.app running the workspace's `tg-claude.sh` if present, else the inline equivalent (`claude --dangerously-load-development-channels server:tg-bridge --continue --permission-mode bypassPermissions` with `TG_BRIDGE_INSTANCE_NAME` exported). macOS only in v0 |
+| `POST /v1/launch` | `{workspace_path, name?}` → opens Terminal.app running the workspace's `polydaemon-claude.sh` if present, else the inline equivalent (`claude --dangerously-load-development-channels server:tg-bridge --continue --permission-mode bypassPermissions` with `TG_BRIDGE_INSTANCE_NAME` exported). macOS only in v0 |
 
 Quick smoke:
 

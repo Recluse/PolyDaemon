@@ -32,7 +32,7 @@ bot.api.config.use(async (prev, method, payload, signal) => {
     }
     const waitS = Math.min(retryAfter, MAX_RETRY_AFTER_S)
     attempt += 1
-    console.error(`tg-bridge: ${method} hit 429 — retrying in ${waitS}s (attempt ${attempt}/${MAX_429_RETRIES})`)
+    console.error(`PolyDaemon: ${method} hit 429 — retrying in ${waitS}s (attempt ${attempt}/${MAX_429_RETRIES})`)
     await new Promise((r) => setTimeout(r, waitS * 1000 + 250))
   }
 })
@@ -121,7 +121,7 @@ export async function sendMessageSafe(
     })
   } catch (e) {
     if (parseMode && isFormatParseError(e)) {
-      console.error(`tg-bridge: ${parseMode} rejected (${(e as { description?: string }).description}) — resending chunk as plain text`)
+      console.error(`PolyDaemon: ${parseMode} rejected (${(e as { description?: string }).description}) — resending chunk as plain text`)
       return await bot.api.sendMessage(chatId, text, extra)
     }
     throw e

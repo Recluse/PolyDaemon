@@ -1,5 +1,5 @@
 <#
-launch-ws.ps1 — open a workspace's Claude (tg-claude.cmd) in a VISIBLE console window.
+launch-ws.ps1 — open a workspace's Claude (polydaemon-claude.cmd) in a VISIBLE console window.
 
 The instance connects to the tg-bridge by --name (= its folder), registers, and the
 Python bot auto-creates/binds its forum topic (topic-bindings.json keyed by cwd) — so
@@ -8,7 +8,7 @@ the whole conversation for that workspace lives in its own Telegram topic.
 Usage:  launch-ws.ps1 <workspace-name>     # e.g. launch-ws.ps1 my-project
         launch-ws.ps1 <name> -Dir <folder>  # open that folder (what the bot sends);
                                             # falls back to the name search if it
-                                            # holds no tg-claude.cmd
+                                            # holds no polydaemon-claude.cmd
         launch-ws.ps1 -List                # list launchable workspaces
 
 Workspace root: -WorkspaceRoot, else $env:TG_WS_ROOT, else <system drive>\Work.
@@ -36,7 +36,7 @@ param(
                            # launched window — a full-session resume otherwise gets
                            # compacted immediately, undoing the point of picking
                            # "full session". We pass --settings {autoCompactEnabled:
-                           # false} through tg-claude.cmd's %*. (The
+                           # false} through polydaemon-claude.cmd's %*. (The
                            # CLAUDE_CODE_AUTO_COMPACT_WINDOW env only sets a NUMERIC
                            # threshold and silently ignores non-numeric values, so it
                            # can't turn auto-compact off.) Pass -KeepAutoCompact to
@@ -53,15 +53,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Discover every folder under $WorkspaceRoot (depth<=4) that has a tg-claude.cmd.
+# Discover every folder under $WorkspaceRoot (depth<=4) that has a polydaemon-claude.cmd.
 # NB: -Recurse does not descend into junctions/symlinks — probe top-level
 # reparse points explicitly (a junction workspace is a named alias of another
 # one: window name = folder basename).
 function Get-Workspaces {
-  $found = Get-ChildItem -Path $WorkspaceRoot -Recurse -Depth 4 -Filter 'tg-claude.cmd' -File -ErrorAction SilentlyContinue |
+  $found = Get-ChildItem -Path $WorkspaceRoot -Recurse -Depth 4 -Include 'polydaemon-claude.cmd','tg-claude.cmd' -File -ErrorAction SilentlyContinue |
     ForEach-Object { [pscustomobject]@{ Name = $_.Directory.Name; Path = $_.Directory.FullName } }
   $junctions = Get-ChildItem -Path $WorkspaceRoot -Directory -ErrorAction SilentlyContinue |
-    Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Test-Path (Join-Path $_.FullName 'tg-claude.cmd')) } |
+    Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and ((Test-Path -LiteralPath (Join-Path $_.FullName 'polydaemon-claude.cmd')) -or (Test-Path -LiteralPath (Join-Path $_.FullName 'tg-claude.cmd'))) } |
     ForEach-Object { [pscustomobject]@{ Name = $_.Name; Path = $_.FullName } }
   @($found) + @($junctions) | Sort-Object Name -Unique
 }
@@ -71,7 +71,7 @@ function Get-Workspaces {
 # A plain string, not Join-Path: PowerShell 5.1's Join-Path throws on a drive that
 # is not mounted (an unplugged disk), which under ErrorAction Stop killed the
 # script before the name-search fallback below could run.
-if ($Dir -and -not $List -and (Test-Path -LiteralPath "$Dir\tg-claude.cmd")) {
+if ($Dir -and -not $List -and ((Test-Path -LiteralPath "$Dir\polydaemon-claude.cmd") -or (Test-Path -LiteralPath "$Dir\tg-claude.cmd"))) {
   $workspaces = @([pscustomobject]@{ Name = (Split-Path $Dir -Leaf); Path = (Resolve-Path -LiteralPath $Dir).Path })
   $Name = $workspaces[0].Name
 } else {
@@ -79,7 +79,7 @@ if ($Dir -and -not $List -and (Test-Path -LiteralPath "$Dir\tg-claude.cmd")) {
 }
 
 if ($List -or -not $Name) {
-  Write-Output 'Launchable workspaces (have tg-claude.cmd):'
+  Write-Output 'Launchable workspaces (have polydaemon-claude.cmd):'
   $workspaces | ForEach-Object { Write-Output ('  {0,-22} {1}' -f $_.Name, $_.Path) }
   return
 }
@@ -95,7 +95,8 @@ if ($match.Count -gt 1) {
 }
 
 $dir = $match.Path
-$cmdPath = Join-Path $dir 'tg-claude.cmd'
+$cmdPath = Join-Path $dir 'polydaemon-claude.cmd'
+if (-not (Test-Path -LiteralPath $cmdPath)) { $cmdPath = Join-Path $dir 'tg-claude.cmd' }
 
 # Disable claude's auto-compact for THIS launched window. Without it, a full-session
 # resume gets auto-compacted immediately, defeating the "Resume full session" choice.
@@ -103,7 +104,7 @@ $cmdPath = Join-Path $dir 'tg-claude.cmd'
 # CLAUDE_CODE_AUTO_COMPACT_WINDOW env only sets a NUMERIC threshold and silently
 # ignores non-numeric input). We write a tiny settings overlay and pass it via
 # claude's `--settings <file>` (it merges on top of normal settings), forwarded
-# through tg-claude.cmd's `%*`. A file path (no spaces) sidesteps cmd quote-mangling
+# through polydaemon-claude.cmd's `%*`. A file path (no spaces) sidesteps cmd quote-mangling
 # that inline JSON braces/quotes would hit. Scoped to launched windows; global
 # settings untouched.
 $extraArgs = @()
@@ -118,9 +119,9 @@ if (-not $KeepAutoCompact) {
 }
 
 # Pass the FULL path to the .cmd (a bare name resolves against cmd's own cwd, not $dir,
-# and launched the wrong workspace). tg-claude.cmd cd's to its own dir via %~dp0.
+# and launched the wrong workspace). polydaemon-claude.cmd cd's to its own dir via %~dp0.
 # cmd /k keeps the window open after claude exits. Extra args after the .cmd path
-# flow into tg-claude.cmd's %* and on to claude.
+# flow into polydaemon-claude.cmd's %* and on to claude.
 $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList (@('/k', "`"$cmdPath`"") + $extraArgs) `
   -WorkingDirectory $dir -WindowStyle Normal -PassThru
 Write-Output "launched '$($match.Name)' (pid $($proc.Id)) -> $cmdPath"

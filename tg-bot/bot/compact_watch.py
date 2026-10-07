@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Idle compaction.
 #
 # Claude's own auto-compact is deliberately OFF in every window we launch
-# (clients/tg-claude.sh writes {"autoCompactEnabled": false} into a --settings
+# (clients/polydaemon-claude.sh writes {"autoCompactEnabled": false} into a --settings
 # file). The reason is in that script: a window started with a full --continue
 # resume got compacted the instant it loaded, throwing away exactly the context
 # the owner had asked to keep. Turning the flag back on brings that back.

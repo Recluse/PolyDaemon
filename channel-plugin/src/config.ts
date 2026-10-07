@@ -75,13 +75,13 @@ export const BOTAPI_WORKDIR = (process.env.TG_BOTAPI_WORKDIR ?? '/var/lib/telegr
 
 if (!TOKEN) {
   log(
-    `tg-bridge: TG_BOT_TOKEN required.\n` +
+    `PolyDaemon: TG_BOT_TOKEN required.\n` +
     `  Set in env or ${ENV_FILE}\n`,
   )
   process.exit(1)
 }
 if (!AUTH_TOKEN) {
-  log('tg-bridge: TG_BRIDGE_AUTH_TOKEN required.\n')
+  log('PolyDaemon: TG_BRIDGE_AUTH_TOKEN required.\n')
   process.exit(1)
 }
 

@@ -44,7 +44,7 @@ function defaults(): AgentConfig {
 
 function render(cfg: AgentConfig): string {
   return [
-    '# tg-bridge agent daemon (agentd) — per-machine config',
+    '# PolyDaemon agent (agentd) — per-machine config',
     '# machine_id identifies this machine to the board; bind_host should be',
     '# 127.0.0.1 (local only) or this machine\'s mesh IP — NEVER 0.0.0.0.',
     `machine_id = "${cfg.machine_id}"`,

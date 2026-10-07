@@ -99,7 +99,7 @@ def register_codex(entry: dict) -> int:
     if r.returncode != 0:
         print(f"codex mcp add failed: {r.stderr.strip() or r.stdout.strip()}")
         return 1
-    print("registered tg-bridge for Codex")
+    print("registered PolyDaemon for Codex (MCP key: tg-bridge)")
     return 0
 
 
@@ -194,7 +194,7 @@ def main(repo: pathlib.Path, dry: bool, codex: bool = False, opencode: bool = Fa
     if r.returncode != 0:
         print(f"claude mcp add-json failed: {r.stderr.strip() or r.stdout.strip()}")
         return 1
-    print("registered tg-bridge at user scope; windows started from now on use it")
+    print("registered PolyDaemon at user scope (MCP key: tg-bridge); new windows use it")
     return 0
 
 

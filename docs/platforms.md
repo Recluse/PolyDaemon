@@ -45,7 +45,7 @@ it again — so it goes wherever both work.
 
 ## Windows
 
-- **Launcher:** `tg-claude.cmd` from the repository root, copied into each
+- **Launcher:** `polydaemon-claude.cmd` from the repository root, copied into each
   project. It resumes the folder's last conversation when there is one, and knows
   how to find it for a folder that is a junction.
 - **`/launch`:** `launch-ws.ps1`, run by the launch agent. It opens a console,
@@ -58,7 +58,7 @@ it again — so it goes wherever both work.
 
 ## macOS
 
-- **Launcher:** `clients/tg-claude.sh`, linked or copied into each project. It
+- **Launcher:** `clients/polydaemon-claude.sh`, linked or copied into each project. It
   works with the stock bash 3.2.
 - **iTerm2 is recommended.** With it, `/launch` opens windows as tabs, answers the
   startup prompts, and the bot can type commands into a window. The first time,
@@ -66,14 +66,14 @@ it again — so it goes wherever both work.
   terminal — may control iTerm2; approve it once.
 - **Terminal.app** works for everything except typing into a window: `/launch`
   opens a window, and you answer the startup prompts in it.
-- **tmux instead** (`brew install tmux`): `TG_TMUX=1` for `clients/tg-claude.sh`,
+- **tmux instead** (`brew install tmux`): `TG_TMUX=1` for `clients/polydaemon-claude.sh`,
   `TG_MAC_TERMINAL=tmux` for the launch agent — then it behaves as on Linux.
 - The launch agent runs as a LaunchAgent — see
   [multi-machine.md](multi-machine.md#3-starting-windows-from-telegram--the-launch-agent).
 
 ## Linux
 
-- **Install tmux.** With it, everything in the table works: `clients/tg-claude.sh`
+- **Install tmux.** With it, everything in the table works: `clients/polydaemon-claude.sh`
   starts the window inside a tmux session named `pd-<folder>` (reattach any time
   with `tmux attach -t pd-<folder>`), the bot types commands into that pane, and
   `/launch` starts a detached session and answers Claude's startup prompts by

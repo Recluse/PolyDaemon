@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tg-codex.sh — a Codex window attached to the daemon's shared app-server.
+# polydaemon-codex.sh — a Codex window attached to the daemon's shared app-server.
 # Telegram messages reach it by push (the daemon starts a turn in the thread),
 # the TUI and the bridge see the same thread, and the window registers as
 # "<folder>-codex" with its OWN forum topic. It continues this folder's last
@@ -9,7 +9,7 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${TG_CODEX_WS_PORT:-3210}"
 WS="ws://127.0.0.1:${PORT}"
 if ! curl -sm2 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
-  echo "tg-codex: the daemon's Codex app-server is not answering on :${PORT} — start agent/agentd.ts (docs/codex.md)" >&2
+  echo "polydaemon-codex: the daemon's Codex app-server is not answering on :${PORT} — start agent/agentd.ts (docs/codex.md)" >&2
   exit 1
 fi
 # Resume this folder's most recent thread, if the daemon knows it.
@@ -24,7 +24,7 @@ if [ -f "$AGENT_TOML" ] && [ "${TG_CODEX_NEW:-0}" != 1 ]; then
     2>/dev/null | sed -n 's/.*"thread_id":"\([^"]*\)".*/\1/p')"
 fi
 if [ -n "$RESUME_ID" ]; then
-  echo "tg-codex: continuing thread ${RESUME_ID}"
+  echo "polydaemon-codex: continuing thread ${RESUME_ID}"
   exec codex --remote "$WS" resume "$RESUME_ID" --cd "$(pwd -P)" "$@"
 else
   exec codex --remote "$WS" --cd "$(pwd -P)" "$@"

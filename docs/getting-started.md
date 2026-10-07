@@ -131,12 +131,12 @@ Put the launcher in the root of a project you want to reach from Telegram — co
 it or symlink it:
 
 ```sh
-ln -s /absolute/path/to/this/repo/clients/tg-claude.sh ~/code/my-project/tg-claude.sh
+ln -s /absolute/path/to/this/repo/clients/polydaemon-claude.sh ~/code/my-project/polydaemon-claude.sh
 cd ~/code/my-project
-./tg-claude.sh
+./polydaemon-claude.sh
 ```
 
-On Windows, use `tg-claude.cmd` from the repository root the same way.
+On Windows, use `polydaemon-claude.cmd` from the repository root the same way.
 
 The launcher starts Claude with the Telegram channel, names the window after the
 folder, resumes that folder's last session when there is one, and runs in

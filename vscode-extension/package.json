@@ -1,7 +1,7 @@
 {
   "name": "tg-copilot-bridge",
-  "displayName": "TG Copilot Bridge",
-  "description": "Auto-launches Claude Code CLI in an integrated terminal when a workspace opens, so the tg-bridge MCP channel-plugin attaches automatically.",
+  "displayName": "PolyDaemon",
+  "description": "Starts Claude Code with the PolyDaemon Telegram bridge when a workspace opens.",
   "version": "0.0.2",
   "publisher": "local",
   "engines": {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// agentd.ts — bridged-agent v0: the board's per-machine eyes and hands
+// agentd.ts — PolyDaemon agent v0: the board's per-machine eyes and hands
 // (plan/active/board/01-daemon-v0.md; SRS 10/40/95).
 //
 //   GET  /v1/health                          — no auth: {ok, version}
@@ -389,7 +389,7 @@ try {
   process.exit(1)
 }
 
-log(`bridged-agent v${VERSION} listening on ${cfg.bind_host}:${cfg.port} (machine_id=${cfg.machine_id})`)
+log(`PolyDaemon agent v${VERSION} listening on ${cfg.bind_host}:${cfg.port} (machine_id=${cfg.machine_id})`)
 
 // Codex adapter: own the app-server so TUIs can attach (codex --remote) and
 // the bot's inbound can be pushed into threads (см. /v1/codex/deliver).

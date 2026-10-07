@@ -80,7 +80,7 @@ export function upsertInstance(row: InstanceRow): void {
       Date.now() / 1000,
     )
   } catch (e) {
-    log(`tg-bridge: failed to register instance: ${e}`)
+    log(`PolyDaemon: failed to register instance: ${e}`)
   }
 }
 
@@ -89,7 +89,7 @@ export function heartbeatInstance(id: string): void {
     getRoutesDb().prepare('UPDATE instances SET heartbeat_at=? WHERE id=?')
       .run(Date.now() / 1000, id)
   } catch (e) {
-    log(`tg-bridge: failed to heartbeat instance: ${e}`)
+    log(`PolyDaemon: failed to heartbeat instance: ${e}`)
   }
 }
 
@@ -97,7 +97,7 @@ export function deleteInstance(id: string): void {
   try {
     getRoutesDb().prepare('DELETE FROM instances WHERE id=?').run(id)
   } catch (e) {
-    log(`tg-bridge: failed to unregister instance: ${e}`)
+    log(`PolyDaemon: failed to unregister instance: ${e}`)
   }
 }
 
@@ -123,6 +123,6 @@ export function recordMessageRoute(chatId: string | number, messageId: number): 
       'INSERT OR REPLACE INTO message_routes(chat_id, message_id, instance, created_at) VALUES (?, ?, ?, ?)'
     ).run(Number(chatId), messageId, effectiveWorkspaceName(), Date.now() / 1000)
   } catch (e) {
-    log(`tg-bridge: failed to record message route: ${e}`)
+    log(`PolyDaemon: failed to record message route: ${e}`)
   }
 }

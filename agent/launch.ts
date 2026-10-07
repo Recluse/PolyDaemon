@@ -7,7 +7,7 @@ import { log } from './log.ts'
 // POST /v1/launch — macOS branch only (v0): open Terminal.app running claude
 // with the tg-bridge channel in the given workspace.
 //
-// If the workspace ships its own clients/tg-claude.sh copy, we run THAT (it
+// If the workspace ships its own clients/polydaemon-claude.sh copy, we run THAT (it
 // carries the canonical flag set and the TG_BRIDGE_INSTANCE_NAME export);
 // otherwise we inline the same command. Windows (launch-ws.ps1 via
 // clients/launch-agent.ts) and Linux branches come later.
@@ -42,20 +42,20 @@ export function launchWindow(body: LaunchRequest): LaunchResult {
     return { ok: false, reason: 'workspace_path does not exist' }
   }
   // Default the window name to the folder basename, sanitized the same way
-  // tg-claude.sh does (tr -cs '[:alnum:]._-' '_').
+  // polydaemon-claude.sh does (tr -cs '[:alnum:]._-' '_').
   const name = String(body.name ?? '') || basename(wsPath).replace(/[^a-zA-Z0-9._-]+/g, '_')
   if (!SAFE_NAME.test(name)) return { ok: false, reason: 'unsafe or empty name' }
 
-  const script = join(wsPath, 'tg-claude.sh')
+  const script = ['polydaemon-claude.sh', 'tg-claude.sh'].find(file => existsSync(join(wsPath, file)))
   let cmd: string
   let method: string
-  if (existsSync(script)) {
-    // TG_WS_NAME overrides the name inside tg-claude.sh; bash avoids relying
+  if (script) {
+    // TG_WS_NAME overrides the name inside polydaemon-claude.sh; bash avoids relying
     // on the exec bit.
-    cmd = `cd ${sq(wsPath)} && TG_WS_NAME=${sq(name)} exec bash ./tg-claude.sh`
-    method = 'tg-claude.sh'
+    cmd = `cd ${sq(wsPath)} && TG_WS_NAME=${sq(name)} exec bash ${sq('./' + script)}`
+    method = script
   } else {
-    // Inline clone of clients/tg-claude.sh: same flags, same identity export
+    // Inline clone of clients/polydaemon-claude.sh: same flags, same identity export
     // (claude --name never reaches the plugin — TG_BRIDGE_INSTANCE_NAME does).
     cmd = `cd ${sq(wsPath)} && export TG_BRIDGE_INSTANCE_NAME=${sq(name)} && `
       + `exec claude --dangerously-load-development-channels server:tg-bridge `

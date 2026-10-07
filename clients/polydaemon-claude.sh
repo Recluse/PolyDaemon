@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# tg-claude.sh — macOS/Linux per-workspace launcher (companion to Windows
-# tg-claude.cmd). Drop a copy in each workspace root (or symlink it), then run it
+# polydaemon-claude.sh — macOS/Linux per-workspace launcher (companion to Windows
+# polydaemon-claude.cmd). Drop a copy in each workspace root (or symlink it), then run it
 # from that workspace. Launches claude with the tg-bridge dev channel and the same
 # flags as Windows:
 #   --name <folder>                       bot/registry identify the window by workspace
@@ -10,7 +10,7 @@
 #   --settings {autoCompactEnabled:false} keep the FULL session — a large resume
 #                                         otherwise gets auto-compacted immediately
 #                                         (set TG_KEEP_AUTOCOMPACT=1 to opt out).
-# Extra args pass through:  ./tg-claude.sh --model claude-opus-4-8
+# Extra args pass through:  ./polydaemon-claude.sh --model claude-opus-4-8
 #
 # The plugin's networking env (TG_BRIDGE_BOT_URL → the bot on the bot host, TG_API_ROOT,
 # TG_BRIDGE_BIND_HOST / TG_BRIDGE_ADVERTISE_HOST = this device's mesh IP, the shared

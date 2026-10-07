@@ -30,7 +30,7 @@ STRINGS: dict[str, str] = {
     "common.age_seconds": "{n}с",
     "common.bad_callback": "⚠️ Некорректный колбэк.",
     "common.failed_reason": "❌ Не вышло: {reason}",
-    "common.launch_all_running": "✅ Все зарегистрированные воркспейсы уже запущены (или у них нет лаунчера tg-claude).",
+    "common.launch_all_running": "✅ Все зарегистрированные воркспейсы уже запущены (или у них нет лаунчера PolyDaemon для Claude).",
     "common.no_windows": "🚫 Нет зарегистрированных окон Claude Code.",
     "common.no_windows_available": "🚫 Нет доступных окон Claude Code.",
     "common.unknown_action": "⚠️ Неизвестное действие.",

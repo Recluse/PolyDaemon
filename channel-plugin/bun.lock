@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "tg-bridge-channel-plugin",
+      "name": "polydaemon-channel-plugin",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.0.0",
         "grammy": "^1.21.0",

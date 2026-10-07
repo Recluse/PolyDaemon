@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Сводный справочник по всем поверхностям конфигурации tg-bridge: конфиг бота,
+Сводный справочник по всем поверхностям конфигурации PolyDaemon: конфиг бота,
 env-переменные плагина, три места MCP-конфига, файлы permission-override и
 runtime-состояния, а также запуск claude с бриджем.
 
@@ -57,7 +57,7 @@ runtime-состояния, а также запуск claude с бриджем.
 | `TG_BRIDGE_AUTH_TOKEN` | да | — | Shared-secret между ботом и плагином (HTTP-авторизация). Без него плагин падает. |
 | `TG_BRIDGE_INSTANCE_NAME` | нет | basename(cwd) | Имя инстанса/окна. По умолчанию — имя папки воркспейса. |
 | `TG_BRIDGE_PORT` | нет | `3100` | Стартовый порт локального HTTP-сервера плагина (далее ищется свободный вверх). |
-| `TG_BRIDGE_FORCE_CHANNELS` | нет | — | `1` = окно запущено с каналами, проверять не нужно. Лаунчеры (`tg-claude.sh`, `tg-claude.cmd`) ставят сами; без него плагин смотрит командную строку родителя (на Windows — через WMI, которая может подвиснуть). |
+| `TG_BRIDGE_FORCE_CHANNELS` | нет | — | `1` = окно запущено с каналами, проверять не нужно. Лаунчеры (`polydaemon-claude.sh`, `polydaemon-claude.cmd`) ставят сами; без него плагин смотрит командную строку родителя (на Windows — через WMI, которая может подвиснуть). |
 | `TG_API_ROOT` | нет | `https://api.telegram.org` | Эндпоинт Bot API для плагина. Любое значение ≠ облака → `API_IS_LOCAL=true` (local-режим). Trailing-слэши срезаются. |
 | `TG_BOTAPI_DOCKER` | нет | `wsl docker` | Команда docker-CLI для `docker cp` из контейнера, когда `telegram-bot-api` локален. |
 | `TG_BOTAPI_CONTAINER` | нет | `telegram-bot-api` | Имя docker-контейнера `telegram-bot-api`. |
@@ -149,7 +149,7 @@ JSON `{ workspace_name: mode }`. Пишется меню `/permissions` бота
 
 ---
 
-## 6. Запуск claude с бриджем — `tg-claude.cmd`
+## 6. Запуск claude с бриджем — `polydaemon-claude.cmd`
 
 Пер-воркспейсный лаунчер в корне воркспейса. Один и тот же файл работает в любой
 папке — `--name` выводится из имени родительской папки, так что копируй его в

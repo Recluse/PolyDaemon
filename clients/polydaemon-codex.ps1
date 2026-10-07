@@ -11,7 +11,7 @@ if ($CodexArgs.Count -gt 0 -and ($management -contains $CodexArgs[0] -or $CodexA
     exit $LASTEXITCODE
 }
 if ($CodexArgs -contains '--no-daemon') {
-    Write-Host 'tg-codex: ignoring --no-daemon; Telegram uses the bridge app-server.'
+    Write-Host 'polydaemon-codex: ignoring --no-daemon; Telegram uses the bridge app-server.'
     $CodexArgs = @($CodexArgs | Where-Object { $_ -ne '--no-daemon' })
 }
 $npmRoot = Join-Path (Split-Path $codexCommand) 'node_modules\@openai\codex'

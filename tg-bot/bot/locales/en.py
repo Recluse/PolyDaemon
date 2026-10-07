@@ -33,7 +33,7 @@ STRINGS: dict[str, str] = {
     "common.age_seconds": "{n}s",
     "common.bad_callback": "⚠️ Invalid callback.",
     "common.failed_reason": "❌ Failed: {reason}",
-    "common.launch_all_running": "✅ Every registered workspace is already running (or has no tg-claude launcher).",
+    "common.launch_all_running": "✅ Every registered workspace is already running (or has no PolyDaemon Claude launcher).",
     "common.no_windows": "🚫 No Claude Code windows registered.",
     "common.no_windows_available": "🚫 No Claude Code windows available.",
     "common.unknown_action": "⚠️ Unknown action.",

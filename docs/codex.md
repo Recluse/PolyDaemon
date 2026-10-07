@@ -69,8 +69,8 @@ shows it live.
    included. An update that only moves the checkout keeps the same definitions,
    so it does not ask again.
 
-4. **Start a window** from the project folder with `clients/tg-codex.sh` (copy
-   or link it there, like `tg-claude.sh`). It continues the folder's most recent
+4. **Start a window** from the project folder with `clients/polydaemon-codex.sh` (copy
+   or link it there, like `polydaemon-claude.sh`). It continues the folder's most recent
    saved thread when the daemon knows one. Empty loaded threads without a
    persisted rollout are eligible for Telegram delivery, not for resume.
 
@@ -79,7 +79,7 @@ shows it live.
    the workspace of a remote app-server; a fresh session can otherwise use the
    daemon's cwd (`/` under launchd), leaving its plugin without a workspace topic.
    Existing windows keep their current configuration until relaunched.
-   `TG_CODEX_NEW=1 ./tg-codex.sh` explicitly starts a new conversation without
+   `TG_CODEX_NEW=1 ./polydaemon-codex.sh` explicitly starts a new conversation without
    looking up a resume ID; existing history is not removed.
 
 ## Limits
@@ -93,13 +93,13 @@ loaded, not only an updated checkout.
 
 - A thread held open by a Codex started **without** `--remote` is not written to:
   two processes on one thread corrupt it. Start Codex windows with
-  `tg-codex.sh`. Only native interactive CLI processes count as holders;
+  `polydaemon-codex.sh`. Only native interactive CLI processes count as holders;
   `codex sandbox` tool kernels and management commands do not block delivery.
 - macOS uses launchd; Windows uses the on-demand supervisor described below.
 
 ## Windows with npm Codex CLI
 
-Use npm `@openai/codex`, Bun on PATH and PowerShell 7. `clients/tg-codex.ps1 -Workspace <path> resume` starts the local bridge daemon when necessary and attaches the TUI to `ws://127.0.0.1:3210`. It resolves Bun from PATH, without reading Claude configuration, and resolves the native app-server executable from the npm Codex package. `-Check` checks readiness and prints the planned TUI arguments without opening a thread. CLI management commands bypass the remote UI path.
+Use npm `@openai/codex`, Bun on PATH and PowerShell 7. `clients/polydaemon-codex.ps1 -Workspace <path> resume` starts the local bridge daemon when necessary and attaches the TUI to `ws://127.0.0.1:3210`. It resolves Bun from PATH, without reading Claude configuration, and resolves the native app-server executable from the npm Codex package. `-Check` checks readiness and prints the planned TUI arguments without opening a thread. CLI management commands bypass the remote UI path.
 
 `clients/start-agentd.ps1` runs a hidden, per-user supervisor (named mutex prevents duplicates), starts the daemon from the user home and restarts it after exit. Config and logs: `~/.tg-bridge/agent.toml`, `~/.tg-bridge/agentd.log`. It starts on demand from the launcher, not at OS logon. HTTP binds to localhost:3200 with a generated bearer token; app-server is localhost:3210.
 

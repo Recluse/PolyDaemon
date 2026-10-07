@@ -13,7 +13,7 @@ if [ -z "$REPO" ]; then
   fi
 fi
 if [ -z "$REPO" ] || [ ! -f "$REPO/clients/opencode-launch.ts" ]; then
-  echo "tg-opencode: run hooks/install.py --mcp --opencode from the checkout, or set TG_BRIDGE_REPO" >&2
+  echo "polydaemon-opencode: run hooks/install.py --mcp --opencode from the checkout, or set TG_BRIDGE_REPO" >&2
   exit 1
 fi
 exec bun run "$REPO/clients/opencode-launch.ts" "$@"

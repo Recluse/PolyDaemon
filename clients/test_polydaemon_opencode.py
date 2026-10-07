@@ -13,13 +13,13 @@ import unittest
 class OpenCodeLauncherTest(unittest.TestCase):
     def test_workspace_arguments_and_exit_status(self):
         launcher = Path(os.environ.get(
-            "TG_OPENCODE_LAUNCHER", Path(__file__).with_name("tg-opencode.sh")
+            "TG_OPENCODE_LAUNCHER", Path(__file__).with_name("polydaemon-opencode.sh")
         )).resolve()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             workspace = root / "Project # test & space"
             workspace.mkdir()
-            copy = workspace / "tg-opencode.sh"
+            copy = workspace / "polydaemon-opencode.sh"
             shutil.copyfile(launcher, copy)
             copy.chmod(0o755)
             bin_dir = root / "bin"

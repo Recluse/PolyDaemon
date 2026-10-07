@@ -23,7 +23,7 @@ _SAFE_NAME = re.compile(r"^[\w.][\w .\-]*$")
 
 # launch-ws.ps1 lives in the repo root (one above tg-bot/). It opens the folder
 # it is given (-Dir), or finds the workspace by folder NAME (scans the workspace
-# root for tg-claude.cmd; that root is the script's own -WorkspaceRoot /
+# root for polydaemon-claude.cmd; that root is the script's own -WorkspaceRoot /
 # $env:TG_WS_ROOT setting, NOT something this side configures), opens a visible console with claude, nudges the startup TUI
 # with Enters and minimizes the window — all logic we don't want to duplicate.
 LAUNCH_SCRIPT = Path(__file__).resolve().parents[2] / "launch-ws.ps1"
@@ -169,7 +169,9 @@ def _has_local_launcher(cwd: str) -> bool:
     """Co-located bot only: does this folder have a launcher we can run here?
     Both names, because the co-located case is a Windows PC today and a Mac
     tomorrow and the check should not be the thing that decides."""
-    return (Path(cwd) / "tg-claude.cmd").is_file() or (Path(cwd) / "tg-claude.sh").is_file()
+    return any((Path(cwd) / name).is_file() for name in (
+        "polydaemon-claude.cmd", "polydaemon-claude.sh", "tg-claude.cmd", "tg-claude.sh",
+    ))
 
 
 async def launch_workspace(

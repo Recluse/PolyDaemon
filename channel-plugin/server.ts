@@ -96,7 +96,7 @@ function waitForApproval(id: string, tool: string, summary: string): Promise<App
   return new Promise(resolve => {
     const timer = setTimeout(() => {
       pendingApprovals.delete(id)
-      log(`tg-bridge: approval id=${id} timed out, denying`)
+      log(`PolyDaemon: approval id=${id} timed out, denying`)
       resolve('deny')
     }, APPROVAL_TIMEOUT_MS)
     pendingApprovals.set(id, { resolve, timer, tool, summary })
@@ -193,7 +193,7 @@ async function askOneQuestion(
   chatId: number, qIndex: number, qTotal: number, spec: AskQuestionSpec,
 ): Promise<AskAnswerResult> {
   const id = randomBytes(6).toString('hex')
-  log(`tg-bridge: ask q=${qIndex + 1}/${qTotal} id=${id} multi=${spec.multiSelect} custom=${spec.allowCustom} opts=${spec.options.length}`)
+  log(`PolyDaemon: ask q=${qIndex + 1}/${qTotal} id=${id} multi=${spec.multiSelect} custom=${spec.allowCustom} opts=${spec.options.length}`)
 
   // Header: "Вопрос N/M" sequence indicator helps the user track progress
   // through a multi-question prompt; suppressed for single-question.
@@ -242,7 +242,7 @@ async function askOneQuestion(
     entry.resolve = resolve
     entry.timer = setTimeout(() => {
       pendingAskQuestions.delete(id)
-      log(`tg-bridge: ask id=${id} timed out`)
+      log(`PolyDaemon: ask id=${id} timed out`)
       resolve({ cancelled: true })
     }, APPROVAL_TIMEOUT_MS)
   })
@@ -259,7 +259,7 @@ async function askOneQuestion(
   } catch (e) {
     clearTimeout(entry.timer)
     pendingAskQuestions.delete(id)
-    log(`tg-bridge: ask id=${id} sendMessage failed: ${e}`)
+    log(`PolyDaemon: ask id=${id} sendMessage failed: ${e}`)
     return { error: `Telegram send failed (${e}).` }
   }
 
@@ -294,7 +294,7 @@ async function askOneQuestion(
       { parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } },
     )
   } catch (e) {
-    log(`tg-bridge: ask id=${id} final edit failed: ${e}`)
+    log(`PolyDaemon: ask id=${id} final edit failed: ${e}`)
   }
 
   return { question: spec.question, header: spec.header, multiSelect: spec.multiSelect, kind, selectedLabels, customText }
@@ -596,7 +596,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           })
         }
         const drained = inboundQueue.splice(0, inboundQueue.length)
-        log(`tg-bridge: receive drained ${drained.length} message(s)`)
+        log(`PolyDaemon: receive drained ${drained.length} message(s)`)
         return { content: [{ type: 'text', text: JSON.stringify(drained) }] }
       }
 
@@ -678,12 +678,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const toolInput = args.tool_input ?? args.toolInput ?? args.input ?? {}
         const promptText = String(args.prompt ?? '')
         const id = randomBytes(6).toString('hex')
-        log(`tg-bridge: approve_action id=${id} tool=${toolName} args=${JSON.stringify(args).slice(0, 800)}`)
+        log(`PolyDaemon: approve_action id=${id} tool=${toolName} args=${JSON.stringify(args).slice(0, 800)}`)
 
         const approvalChat = approvalChatFor(lastChatId)
         if (approvalChat == null) {
           const msg = 'No active Telegram session — send a message via Telegram first.'
-          log(`tg-bridge: approve_action id=${id} no chat_id, denying`)
+          log(`PolyDaemon: approve_action id=${id} no chat_id, denying`)
           return { content: [{ type: 'text', text: JSON.stringify({ behavior: 'deny', message: msg }) }] }
         }
 
@@ -721,7 +721,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           })
           recordMessageRoute(approvalChat, sent.message_id)
         } catch (e) {
-          log(`tg-bridge: approve_action sendMessage failed: ${e}`)
+          log(`PolyDaemon: approve_action sendMessage failed: ${e}`)
           denyApproval(id)
           return { content: [{ type: 'text', text: JSON.stringify({ behavior: 'deny', message: `Telegram send failed: ${e}` }) }] }
         }
@@ -738,7 +738,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               { message_thread_id: apprTopic.message_thread_id, parse_mode: 'HTML' },
             )
           } catch (e) {
-            log(`tg-bridge: approve_action topic mirror failed: ${e}`)
+            log(`PolyDaemon: approve_action topic mirror failed: ${e}`)
           }
         } else if (apprForumThread != null && lastUserId != null) {
           try {
@@ -748,13 +748,13 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               { parse_mode: 'HTML' },
             )
           } catch (e) {
-            log(`tg-bridge: approve_action DM mirror failed: ${e}`)
+            log(`PolyDaemon: approve_action DM mirror failed: ${e}`)
           }
         }
 
         const decision = await decisionPromise
 
-        log(`tg-bridge: approve_action id=${id} decision=${decision}`)
+        log(`PolyDaemon: approve_action id=${id} decision=${decision}`)
         if (decision === 'always' && isClaudeClient()) persistAllowRule(toolName, toolInput)
         const result = decision === 'once' || decision === 'always'
           ? { behavior: 'allow' }
@@ -880,7 +880,7 @@ async function deliverReply(
         }
       }
     } catch (e) {
-      log(`tg-bridge: topic mirror failed: ${e}`)
+      log(`PolyDaemon: topic mirror failed: ${e}`)
     }
   }
 
@@ -905,7 +905,7 @@ async function deliverReply(
         recordMessageRoute(lastUserId, sent.message_id)
       }
     } catch (e) {
-      log(`tg-bridge: DM mirror failed: ${e}`)
+      log(`PolyDaemon: DM mirror failed: ${e}`)
     }
   }
 
@@ -928,19 +928,19 @@ mcp.oninitialized = () => {
     // window. Don't pollute the registry with a rootless phantom — the reply
     // tool still works (it carries an explicit chat_id), and the daemon owns
     // per-workspace codex topic registration.
-    log('tg-bridge: codex shared app-server (rootless) — not registering as a window')
+    log('PolyDaemon: codex shared app-server (rootless) — not registering as a window')
     unregisterInstance()
     return
   }
   const name = `${basename(cwd)}-codex`
   setNameOverride(name)
   reRegister()
-  log(`tg-bridge: codex host detected — renamed to ${name}`)
+  log(`PolyDaemon: codex host detected — renamed to ${name}`)
 }
 
 // ---------------------------------------------------------------------------
 // Codex delivery — Codex ignores the notifications/claude/channel push, so for
-// Codex hosts inbound is ALSO handed to the local bridged-agent daemon, which
+// Codex hosts inbound is ALSO handed to the local PolyDaemon agent daemon, which
 // injects it into the thread via codex app-server turn/start (adapter v2).
 function isCodexClient(): boolean {
   try {
@@ -1220,7 +1220,7 @@ async function handleMessage(body: InboundBody): Promise<void> {
         if (!firstEmojiPath) firstEmojiPath = p
         lines.push(`• ${tag} — image: ${p}`)
       } catch (err) {
-        log(`tg-bridge: emoji fetch failed id=${e.emoji_id}: ${err}`)
+        log(`PolyDaemon: emoji fetch failed id=${e.emoji_id}: ${err}`)
         lines.push(`• ${tag} — (image unavailable)`)
       }
     }
@@ -1257,18 +1257,18 @@ async function handleMessage(body: InboundBody): Promise<void> {
   }
   // Also queue for pull-based hosts (desktop app) that ignore the notification.
   enqueueInbound(notifParams.content, notifParams.meta)
-  log(`tg-bridge: sending notification content="${notifParams.content.slice(0, 80)}"`)
+  log(`PolyDaemon: sending notification content="${notifParams.content.slice(0, 80)}"`)
   try {
     await mcp.notification({
       method: 'notifications/claude/channel',
       params: notifParams,
     })
-    log('tg-bridge: notification sent OK')
+    log('PolyDaemon: notification sent OK')
     // Arm the stuck-window check (see checkStuck). Reactions are not prompts;
     // Codex keeps its transcript elsewhere, where this cannot see it move.
     if (!body.event && inboundPendingSince == null && isClaudeClient()) inboundPendingSince = Date.now()
   } catch (err) {
-    log(`tg-bridge: notification FAILED: ${err}`)
+    log(`PolyDaemon: notification FAILED: ${err}`)
     throw err
   }
 
@@ -1279,9 +1279,9 @@ async function handleMessage(body: InboundBody): Promise<void> {
     const readable = formatCodexInbound(notifParams.content, notifParams.meta)
     const r = await deliverViaCodexAdapter(readable)
     if (r.ok) {
-      log('tg-bridge: codex adapter delivery OK')
+      log('PolyDaemon: codex adapter delivery OK')
     } else {
-      log(`tg-bridge: codex adapter delivery failed: ${r.reason}`)
+      log(`PolyDaemon: codex adapter delivery failed: ${r.reason}`)
       try {
         const hintThread = forumThreadFor(Number(body.chat_id))
         await bot.api.sendMessage(String(body.chat_id),
@@ -1364,7 +1364,7 @@ async function startHttpServer(): Promise<number> {
             const toolName = String(body.tool_name ?? 'unknown')
             const toolInput = body.tool_input ?? {}
             const id = randomBytes(6).toString('hex')
-            log(`tg-bridge: approve-request id=${id} tool=${toolName} cwd=${body.cwd ?? ''}`)
+            log(`PolyDaemon: approve-request id=${id} tool=${toolName} cwd=${body.cwd ?? ''}`)
 
             // Workspace-level Bypass — set via the Telegram bot's /permissions menu —
             // skips the round-trip and auto-allows. Live for already-running sessions
@@ -1374,13 +1374,13 @@ async function startHttpServer(): Promise<number> {
             // 'allow' for them, undoing the hook's whole exception.
             const wsMode = getWorkspacePermissionMode()
             if (wsMode === 'bypassPermissions' && body.sensitive !== true) {
-              log(`tg-bridge: approve-request id=${id} auto-allowed (workspace bypass)`)
+              log(`PolyDaemon: approve-request id=${id} auto-allowed (workspace bypass)`)
               return Response.json({ decision: 'allow', reason: 'Bypass permissions (set via Telegram).' })
             }
 
             const approvalChat = approvalChatFor(lastChatId)
             if (approvalChat == null) {
-              log(`tg-bridge: approve-request id=${id} no chat_id, denying`)
+              log(`PolyDaemon: approve-request id=${id} no chat_id, denying`)
               return Response.json({ decision: 'deny', reason: 'No active Telegram session.' })
             }
 
@@ -1408,13 +1408,13 @@ async function startHttpServer(): Promise<number> {
               // Fail-closed: a transient Telegram outage must NOT auto-approve whatever
               // tool the model is requesting. The parallel approve_action MCP path
               // (above) already denies on send-failure — keep the two consistent.
-              log(`tg-bridge: approve-request id=${id} sendMessage failed: ${e}`)
+              log(`PolyDaemon: approve-request id=${id} sendMessage failed: ${e}`)
               denyApproval(id)
               return Response.json({ decision: 'deny', reason: `Telegram send failed (${e}), denying.` })
             }
 
             const decision = await decisionPromise
-            log(`tg-bridge: approve-request id=${id} decision=${decision}`)
+            log(`PolyDaemon: approve-request id=${id} decision=${decision}`)
             if (decision === 'always' && isClaudeClient()) persistAllowRule(toolName, toolInput)
             const result = decision === 'once' || decision === 'always'
               ? { decision: 'allow', reason: `Approved via Telegram (${decision}).` }
@@ -1428,7 +1428,7 @@ async function startHttpServer(): Promise<number> {
             catch { return new Response('Bad JSON', { status: 400 }) }
             if (!cbBody || typeof cbBody.id !== 'string' || !cbBody.id
                 || !['once', 'always', 'deny'].includes(cbBody.action)) {
-              log('tg-bridge: rejected malformed approve-callback')
+              log('PolyDaemon: rejected malformed approve-callback')
               return Response.json({ error: 'id and explicit once/always/deny action required' }, { status: 400 })
             }
             const pending = pendingApprovals.get(cbBody.id)
@@ -1437,7 +1437,7 @@ async function startHttpServer(): Promise<number> {
             }
             pendingApprovals.delete(cbBody.id)
             clearTimeout(pending.timer)
-            log(`tg-bridge: approve-callback id=${cbBody.id} action=${cbBody.action}`)
+            log(`PolyDaemon: approve-callback id=${cbBody.id} action=${cbBody.action}`)
             pending.resolve(cbBody.action)
             return Response.json({ ok: true })
           }
@@ -1456,10 +1456,10 @@ async function startHttpServer(): Promise<number> {
               return Response.json({ status: 'invalid', reason: 'empty plan' }, { status: 400 })
             }
             const id = randomBytes(6).toString('hex')
-            log(`tg-bridge: exit-plan id=${id} len=${plan.length} cwd=${body.cwd ?? ''}`)
+            log(`PolyDaemon: exit-plan id=${id} len=${plan.length} cwd=${body.cwd ?? ''}`)
             const planChat = approvalChatFor(lastChatId)
             if (planChat == null) {
-              log(`tg-bridge: exit-plan id=${id} no chat_id, falling back`)
+              log(`PolyDaemon: exit-plan id=${id} no chat_id, falling back`)
               return Response.json({ status: 'fallback', reason: 'No active Telegram session.' })
             }
 
@@ -1477,7 +1477,7 @@ async function startHttpServer(): Promise<number> {
             const decisionPromise = new Promise<PlanDecision | 'cancelled'>(resolve => {
               const timer = setTimeout(() => {
                 pendingPlans.delete(id)
-                log(`tg-bridge: exit-plan id=${id} timed out`)
+                log(`PolyDaemon: exit-plan id=${id} timed out`)
                 resolve('cancelled')
               }, APPROVAL_TIMEOUT_MS)
               pendingPlans.set(id, { resolve, timer, excerpt: plan.slice(0, 2000) })
@@ -1506,13 +1506,13 @@ async function startHttpServer(): Promise<number> {
                 clearTimeout(pending.timer)
                 pending.resolve('cancelled')
               }
-              log(`tg-bridge: exit-plan id=${id} sendMessage failed: ${e}`)
+              log(`PolyDaemon: exit-plan id=${id} sendMessage failed: ${e}`)
               return Response.json({ status: 'fallback', reason: `Telegram send failed (${e}).` })
             }
 
             const decision = await decisionPromise
 
-            log(`tg-bridge: exit-plan id=${id} decision=${decision}`)
+            log(`PolyDaemon: exit-plan id=${id} decision=${decision}`)
             if (decision === 'cancelled') return Response.json({ status: 'timeout' })
             return Response.json({ status: 'answered', decision })
           }
@@ -1562,7 +1562,7 @@ async function startHttpServer(): Promise<number> {
             // the pane claude runs in, so it names exactly this window's pane. -l
             // sends the text literally (so "/model opus[1m]" is not read as key
             // names), then Enter as a key. This is how Linux — and macOS outside
-            // iTerm2 — can be typed into at all (clients/tg-claude.sh TG_TMUX).
+            // iTerm2 — can be typed into at all (clients/polydaemon-claude.sh TG_TMUX).
             // TMUX_PANE is plain inherited environment, though: an editor launched
             // from a tmux shell passes it to every claude it starts, and that claude
             // is not in the pane. So the pane counts only if its process is one of
@@ -1573,7 +1573,7 @@ async function startHttpServer(): Promise<number> {
               const typed = Bun.spawnSync(['tmux', 'send-keys', '-t', pane, '-l', text])
               const entered = typed.exitCode === 0 ? Bun.spawnSync(['tmux', 'send-keys', '-t', pane, 'Enter']) : typed
               if (entered.exitCode === 0) {
-                log(`tg-bridge: inject(tmux) ${JSON.stringify(text)} -> pane ${pane}`)
+                log(`PolyDaemon: inject(tmux) ${JSON.stringify(text)} -> pane ${pane}`)
                 return Response.json({ ok: true })
               }
               return Response.json({ ok: false, reason: `tmux send-keys failed: ${entered.stderr.toString().trim() || 'unknown'}` }, { status: 500 })
@@ -1607,7 +1607,7 @@ return "notfound"`
               const out = res.stdout.toString().trim()
               const err = res.stderr.toString().trim()
               if (out === 'ok') {
-                log(`tg-bridge: inject(iterm) ${JSON.stringify(text)} -> tty ${dev}`)
+                log(`PolyDaemon: inject(iterm) ${JSON.stringify(text)} -> tty ${dev}`)
                 return Response.json({ ok: true })
               }
               if (out === 'notfound') {
@@ -1636,10 +1636,10 @@ return "notfound"`
                 { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
               )
             } catch (e) {
-              log(`tg-bridge: inject failed: ${e}`)
+              log(`PolyDaemon: inject failed: ${e}`)
               return Response.json({ ok: false, reason: String(e) }, { status: 500 })
             }
-            log(`tg-bridge: inject ${JSON.stringify(text)} -> pid ${ppid}`)
+            log(`PolyDaemon: inject ${JSON.stringify(text)} -> pid ${ppid}`)
             return Response.json({ ok: true })
           }
 
@@ -1791,7 +1791,7 @@ return "notfound"`
                 // editMessageReplyMarkup throws "message is not modified" when
                 // tapping the same key twice in a row before our state changes —
                 // ignore those; real failures are still logged.
-                log(`tg-bridge: ask-callback id=${cbBody.id} editMarkup failed: ${e}`)
+                log(`PolyDaemon: ask-callback id=${cbBody.id} editMarkup failed: ${e}`)
               }
               return Response.json({ ok: true })
             }
@@ -1825,7 +1825,7 @@ return "notfound"`
                 )
                 recordMessageRoute(pending.chatId, sent.message_id)
               } catch (e) {
-                log(`tg-bridge: ask-callback custom prompt failed: ${e}`)
+                log(`PolyDaemon: ask-callback custom prompt failed: ${e}`)
                 pending.awaitingText = false
                 return Response.json({ error: `prompt send failed: ${e}` }, { status: 502 })
               }
@@ -1911,7 +1911,7 @@ return "notfound"`
             }
             // Fire-and-forget — don't block the HTTP response on Claude's reply
             handleMessage(body).catch(err => {
-              log(`tg-bridge: failed to deliver to Claude: ${err}\n`)
+              log(`PolyDaemon: failed to deliver to Claude: ${err}\n`)
             })
             return Response.json({ status: 'queued' }, { status: 202 })
           }
@@ -1932,7 +1932,7 @@ return "notfound"`
             if (!message) return Response.json({ status: 'invalid', reason: 'message required' }, { status: 400 })
             // Logged, unlike before: "a prompt showed in the console but not in
             // Telegram" could not be traced, because a delivered notify left no trace.
-            log(`tg-bridge: notify cwd=${nbody.cwd ?? ''} message=${JSON.stringify(message.slice(0, 200))}`)
+            log(`PolyDaemon: notify cwd=${nbody.cwd ?? ''} message=${JSON.stringify(message.slice(0, 200))}`)
             const ws = htmlEscape(INSTANCE_NAME)
             const text = nbody.kind === 'api_error'
               ? `<b>${ws}</b>\n⚠️ <b>Ошибка модели / API</b>\n${htmlEscape(message)}\n${nbody.will_retry ? 'Агент повторяет запрос.' : 'Запрос остановлен. Повтори позже или выбери другую модель.'}`
@@ -1947,11 +1947,11 @@ return "notfound"`
               } else if (lastChatId != null) {
                 await bot.api.sendMessage(String(lastChatId), text, { parse_mode: 'HTML' })
               } else {
-                log('tg-bridge: notify dropped — no topic binding and no active chat')
+                log('PolyDaemon: notify dropped — no topic binding and no active chat')
                 return Response.json({ status: 'fallback', reason: 'no route' })
               }
             } catch (e) {
-              log(`tg-bridge: notify send failed: ${e}`)
+              log(`PolyDaemon: notify send failed: ${e}`)
               return Response.json({ status: 'error', reason: String(e) })
             }
             return Response.json({ status: 'ok' })
@@ -1979,7 +1979,7 @@ return "notfound"`
               : lastChatId != null ? String(lastChatId)
               : null
             if (chatId == null) {
-              log('tg-bridge: auto-reply dropped — no chat_id and no route')
+              log('PolyDaemon: auto-reply dropped — no chat_id and no route')
               return Response.json({ status: 'fallback', reason: 'no route' })
             }
             // Idempotency: a repeated Stop-hook firing re-posts the same final
@@ -1990,16 +1990,16 @@ return "notfound"`
             const promptId = String(abody.prompt_id ?? '')
             if (lastAutoReply && lastAutoReply.text === text && lastAutoReply.chat === chatId
               && lastAutoReply.prompt === promptId) {
-              log(`tg-bridge: auto-reply deduped identical mirror to ${chatId}`)
+              log(`PolyDaemon: auto-reply deduped identical mirror to ${chatId}`)
               return Response.json({ status: 'deduped' })
             }
             lastAutoReply = { text, chat: chatId, prompt: promptId, ts: Date.now() }
             try {
               const sentIds = await deliverReply(chatId, text)
-              log(`tg-bridge: auto-reply mirrored final answer (${sentIds.length} part(s)) to ${chatId}`)
+              log(`PolyDaemon: auto-reply mirrored final answer (${sentIds.length} part(s)) to ${chatId}`)
               return Response.json({ status: 'ok', sent: sentIds.length })
             } catch (e) {
-              log(`tg-bridge: auto-reply send failed: ${e}`)
+              log(`PolyDaemon: auto-reply send failed: ${e}`)
               return Response.json({ status: 'error', reason: String(e) })
             }
           }
@@ -2007,7 +2007,7 @@ return "notfound"`
           return new Response('Not Found', { status: 404 })
         },
         error(err) {
-          log(`tg-bridge: HTTP server error: ${err}\n`)
+          log(`PolyDaemon: HTTP server error: ${err}\n`)
           return new Response('Internal Server Error', { status: 500 })
         },
       })
@@ -2021,12 +2021,12 @@ return "notfound"`
       const msg = String((e as { message?: string })?.message ?? e)
       if (code === 'EADDRINUSE' || /EADDRINUSE|address in use/i.test(msg)) continue
       throw new Error(
-        `tg-bridge: cannot bind ${BIND_HOST}:${port} — ${code || msg}. `
+        `PolyDaemon: cannot bind ${BIND_HOST}:${port} — ${code || msg}. `
         + `If BIND_HOST is a mesh IP, check the interface is up.`,
       )
     }
   }
-  throw new Error(`tg-bridge: could not bind ${BIND_HOST} to any port in ${START_PORT}–${START_PORT + 49}`)
+  throw new Error(`PolyDaemon: could not bind ${BIND_HOST} to any port in ${START_PORT}–${START_PORT + 49}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -2034,10 +2034,10 @@ return "notfound"`
 // ---------------------------------------------------------------------------
 
 process.on('unhandledRejection', err => {
-  log(`tg-bridge: unhandled rejection: ${err}\n`)
+  log(`PolyDaemon: unhandled rejection: ${err}\n`)
 })
 process.on('uncaughtException', err => {
-  log(`tg-bridge: uncaught exception: ${err}\n`)
+  log(`PolyDaemon: uncaught exception: ${err}\n`)
 })
 
 // Refreshes this window's heartbeat_at in the registry so the bot keeps seeing it
@@ -2118,7 +2118,7 @@ async function noteOverlapToTopic(path: string, text: string): Promise<void> {
     })
   } catch (e) {
     // Never let the warning path break the edit it is warning about.
-    log(`tg-bridge: overlap note failed for ${path}: ${e}`)
+    log(`PolyDaemon: overlap note failed for ${path}: ${e}`)
   }
 }
 
@@ -2148,7 +2148,7 @@ function sweepInbox(): void {
     }
   }
   if (removedAge || removedSize) {
-    log(`tg-bridge: inbox janitor removed ${removedAge} old + ${removedSize} over-cap file(s)`)
+    log(`PolyDaemon: inbox janitor removed ${removedAge} old + ${removedSize} over-cap file(s)`)
   }
 }
 
@@ -2182,9 +2182,9 @@ async function checkStuck(): Promise<void> {
       `⏸ <b>${ws}</b> — сообщение не взято в работу уже ${mins} мин.\nПохоже, в консоли окна висит вопрос или диалог (Enter после /login, доверие к папке, запрос). Загляни в окно; сообщения ждут в очереди.`,
       { parse_mode: 'HTML', ...(thread != null ? { message_thread_id: thread } : {}) })
     recordMessageRoute(lastChatId, sent.message_id)
-    log(`tg-bridge: stuck window surfaced (${mins} min without transcript activity)`)
+    log(`PolyDaemon: stuck window surfaced (${mins} min without transcript activity)`)
   } catch (e) {
-    log(`tg-bridge: stuck notice failed: ${e}`)
+    log(`PolyDaemon: stuck notice failed: ${e}`)
   }
 }
 let apiErrorTimer: ReturnType<typeof setInterval> | null = null
@@ -2234,9 +2234,9 @@ async function pollApiError(): Promise<void> {
     // Record the route so a native reply / the model button can resolve this
     // window even outside a bound forum topic (DM / unbound).
     recordMessageRoute(lastChatId, sent.message_id)
-    log(`tg-bridge: api-problem (${p.kind}${isUsageLimit ? ',limit' : ''}) surfaced to chat ${lastChatId}: ${p.text.slice(0, 80)}`)
+    log(`PolyDaemon: api-problem (${p.kind}${isUsageLimit ? ',limit' : ''}) surfaced to chat ${lastChatId}: ${p.text.slice(0, 80)}`)
   } catch (e) {
-    log(`tg-bridge: api-problem notify failed: ${e}`)
+    log(`PolyDaemon: api-problem notify failed: ${e}`)
   }
 }
 
@@ -2244,7 +2244,7 @@ let shuttingDown = false
 function shutdown(): void {
   if (shuttingDown) return
   shuttingDown = true
-  log('tg-bridge: shutting down\n')
+  log('PolyDaemon: shutting down\n')
   if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null }
   if (inboxJanitorTimer) { clearInterval(inboxJanitorTimer); inboxJanitorTimer = null }
   if (apiErrorTimer) { clearInterval(apiErrorTimer); apiErrorTimer = null }
@@ -2275,19 +2275,19 @@ if (CHANNELS_ENABLED) {
   heartbeatTimer = setInterval(heartbeatInstance, HEARTBEAT_INTERVAL_MS)
   sweepInbox()  // once at startup, then hourly
   inboxJanitorTimer = setInterval(sweepInbox, INBOX_SWEEP_INTERVAL_MS)
-  log(`tg-bridge: HTTP listening on ${BIND_HOST}:${port} (instance: ${INSTANCE_NAME})`)
+  log(`PolyDaemon: HTTP listening on ${BIND_HOST}:${port} (instance: ${INSTANCE_NAME})`)
 } else {
-  log(`tg-bridge: parent did not enable channels — skipping HTTP listener and registry. Parent cmd: ${PARENT_CMD.slice(0, 200)}`)
+  log(`PolyDaemon: parent did not enable channels — skipping HTTP listener and registry. Parent cmd: ${PARENT_CMD.slice(0, 200)}`)
 }
 
 // mcp.connect() starts the transport but returns immediately — it does NOT block.
 // The installed SDK doesn't forward stdin EOF to onclose, so close it explicitly.
-log('tg-bridge: connecting MCP transport')
+log('PolyDaemon: connecting MCP transport')
 const transport = new StdioServerTransport()
 process.stdin.once('end', () => { void transport.close() })
 await new Promise<void>((resolve, reject) => {
   mcp.onclose = () => { resolve() }
   mcp.connect(transport).catch(reject)
 })
-log('tg-bridge: MCP transport closed')
+log('PolyDaemon: MCP transport closed')
 shutdown()

@@ -159,9 +159,9 @@ export function persistAllowRule(toolName: string, toolInput: unknown): void {
     if (!s.permissions.allow.includes(rule)) {
       s.permissions.allow.push(rule)
       writeFileSync(settingsPath, JSON.stringify(s, null, 2))
-      log(`tg-bridge: persisted always-allow rule: ${rule}`)
+      log(`PolyDaemon: persisted always-allow rule: ${rule}`)
     }
   } catch (e) {
-    log(`tg-bridge: failed to persist always-allow rule: ${e}`)
+    log(`PolyDaemon: failed to persist always-allow rule: ${e}`)
   }
 }

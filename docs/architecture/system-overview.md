@@ -36,7 +36,7 @@ Telegram User
 | Tray app (`bots_tray.py`, infra repo) | Менеджер процессов: автостарт/рестарт роутер-бота и туннеля, статус в системном трее |
 | Python Router Bot (`tg-bot/`) | Единственный поллер Telegram; маршрутизация: форум-топик → его окно, reply → окно-отправитель, иначе активное окно; топики-на-окно; permission-режимы воркспейсов |
 | Channel Plugin (`channel-plugin/`) | MCP-сервер (Bun/TS), спавнится claude'ом; принимает HTTP POST от бота; пушит в claude через `notifications/claude/channel`; шлёт ответы в TG напрямую; heartbeat в bot.db |
-| Claude Code | Получает сообщения через Channel, отвечает `reply` tool; запускается через VS Code-расширение ИЛИ `tg-claude.cmd` в консоли |
+| Claude Code | Получает сообщения через Channel, отвечает `reply` tool; запускается через VS Code-расширение ИЛИ `polydaemon-claude.cmd` в консоли |
 | Хуки (`~/.claude/hooks/`) | PreToolUse/Notification/Stop-мосты: approvals, AskUserQuestion, ExitPlanMode, нотификации и stop-mirror в TG |
 | VS Code Extension (`vscode-extension/`) | Авто-спавн терминала с claude+флагами; локальный approve-UI endpoint |
 

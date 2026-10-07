@@ -22,7 +22,7 @@ function api(operation: string, params: string[] = [], body?: unknown): any {
 }
 try {
   if (args.includes('--server') || args.some(a => a.startsWith('--server='))) {
-    throw new Error('tg-opencode uses a private local server; --server is not supported')
+    throw new Error('polydaemon-opencode uses a private local server; --server is not supported')
   }
   if (args.includes('--fork')) throw new Error('Use TG_OPENCODE_NEW=1; --fork would change the bound session')
   if (args.includes('--help') || args.includes('-h') || args.includes('--version') || args.includes('-v')) {
@@ -60,6 +60,6 @@ try {
   process.on('SIGTERM', () => child.kill('SIGTERM'))
   process.exit(await child.exited)
 } catch (error) {
-  console.error(`tg-opencode: ${error instanceof Error ? error.message : error}`)
+  console.error(`polydaemon-opencode: ${error instanceof Error ? error.message : error}`)
   process.exit(1)
 }

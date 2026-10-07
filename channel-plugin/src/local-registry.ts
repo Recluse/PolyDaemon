@@ -95,7 +95,7 @@ export function upsertLocal(id: string, row: Omit<LocalRow, 'heartbeat_at'>): vo
       writeAll(map)
     })
   } catch (e) {
-    log(`tg-bridge: local registry upsert failed: ${e}`)
+    log(`PolyDaemon: local registry upsert failed: ${e}`)
   }
 }
 
@@ -110,7 +110,7 @@ export function heartbeatLocal(id: string): void {
       writeAll(map)
     })
   } catch (e) {
-    log(`tg-bridge: local registry heartbeat failed: ${e}`)
+    log(`PolyDaemon: local registry heartbeat failed: ${e}`)
   }
 }
 
@@ -126,6 +126,6 @@ export function removeLocal(id: string): void {
       }
     })
   } catch (e) {
-    log(`tg-bridge: local registry remove failed: ${e}`)
+    log(`PolyDaemon: local registry remove failed: ${e}`)
   }
 }

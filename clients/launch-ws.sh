@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # launch-ws.sh — macOS launcher: open a Terminal window running a workspace's
-# tg-claude.sh (the counterpart of Windows launch-ws.ps1). Finds the workspace by
+# polydaemon-claude.sh (the counterpart of Windows launch-ws.ps1). Finds the workspace by
 # folder name under TG_WORK_DIR (default ~/Work).
 #
 #   ./launch-ws.sh <workspace-name>   open that workspace in a new Terminal window
-#   ./launch-ws.sh <name> <dir>       open <dir> itself if it holds tg-claude.sh
+#   ./launch-ws.sh <name> <dir>       open <dir> itself if it holds polydaemon-claude.sh
 #                                     (what the bot sends); else search by name
-#   ./launch-ws.sh -l                 list launchable workspaces (those with tg-claude.sh)
+#   ./launch-ws.sh -l                 list launchable workspaces (those with polydaemon-claude.sh)
 #
 # Opens a TAB in iTerm2 when iTerm2 is there, otherwise a Terminal.app window.
 # On Linux — and on macOS with TG_MAC_TERMINAL=tmux — it starts a DETACHED tmux
@@ -34,13 +34,13 @@ set -euo pipefail
 WORK_DIR="${TG_WORK_DIR:-$HOME/Work}"
 
 list_ws() {
-  find "$WORK_DIR" -maxdepth 5 -name tg-claude.sh -not -path '*/node_modules/*' 2>/dev/null \
+  find "$WORK_DIR" -maxdepth 5 \( -name polydaemon-claude.sh -o -name tg-claude.sh \) -not -path '*/node_modules/*' 2>/dev/null \
     | while read -r f; do d="$(dirname "$f")"; printf '  %-24s %s\n' "$(basename "$d")" "$d"; done | sort -u
 }
 
 [ $# -ge 1 ] || { echo "usage: launch-ws.sh <workspace-name> | -l | --check"; exit 1; }
 if [ "$1" = "-l" ] || [ "$1" = "--list" ]; then
-  echo "launchable (have tg-claude.sh) under $WORK_DIR:"; list_ws; exit 0
+  echo "launchable (have polydaemon-claude.sh) under $WORK_DIR:"; list_ws; exit 0
 fi
 
 # --check: everything that can be verified WITHOUT opening a window or raising
@@ -75,18 +75,20 @@ fi
 
 NAME="$1"
 DIR=""
-[ $# -ge 2 ] && [ -f "$2/tg-claude.sh" ] && DIR="$2"
+[ $# -ge 2 ] && { [ -f "$2/polydaemon-claude.sh" ] || [ -f "$2/tg-claude.sh" ]; } && DIR="$2"
 [ -n "$DIR" ] || while IFS= read -r d; do
-  [ -f "$d/tg-claude.sh" ] && { DIR="$d"; break; }
+  { [ -f "$d/polydaemon-claude.sh" ] || [ -f "$d/tg-claude.sh" ]; } && { DIR="$d"; break; }
 done < <(find "$WORK_DIR" -maxdepth 5 -type d -name "$NAME" -not -path '*/node_modules/*' 2>/dev/null)
-[ -n "$DIR" ] || { echo "workspace '$NAME' not found under $WORK_DIR (needs tg-claude.sh). Try -l."; exit 1; }
+[ -n "$DIR" ] || { echo "workspace '$NAME' not found under $WORK_DIR (needs polydaemon-claude.sh). Try -l."; exit 1; }
+SCRIPT=polydaemon-claude.sh
+[ -f "$DIR/$SCRIPT" ] || SCRIPT=tg-claude.sh
 
 open_in_terminal_app() {
   # A .command file double-clickable/openable by Terminal — avoids osascript
   # quoting entirely. printf %q quotes the path for the shell, so spaces and
   # special characters survive.
   local tmp="${TMPDIR:-/tmp}/tgws_$$.command"
-  printf '#!/bin/bash\ncd %q && exec bash ./tg-claude.sh\n' "$DIR" > "$tmp"
+  printf '#!/bin/bash\ncd %q && exec bash ./%q\n' "$DIR" "$SCRIPT" > "$tmp"
   chmod +x "$tmp"
   open "$tmp"   # Terminal runs it (default handler for .command)
 }
@@ -96,9 +98,9 @@ open_in_iterm() {
   # AppleScript string escaping and shell quoting stacked on each other is how a
   # path with a space or an apostrophe turns into a syntax error at launch time.
   # `quoted form of` then quotes it for the shell inside the session.
-  osascript - "$DIR" "${TG_MAC_NUDGE:-1}" <<'APPLESCRIPT'
+  osascript - "$DIR" "${TG_MAC_NUDGE:-1}" "$SCRIPT" <<'APPLESCRIPT'
 on run argv
-	set cmd to "cd " & quoted form of (item 1 of argv) & " && exec bash ./tg-claude.sh"
+	set cmd to "cd " & quoted form of (item 1 of argv) & " && exec bash ./" & quoted form of (item 3 of argv)
 	set doNudge to ((item 2 of argv) is not "0")
 	tell application "iTerm"
 		activate
@@ -192,7 +194,7 @@ nudge_tmux() {
 
 open_in_tmux() {
   command -v tmux >/dev/null 2>&1 || { echo "tmux is not installed" >&2; return 1; }
-  # The same two steps as tg-claude.sh (window name, then session name), or a
+  # The same two steps as polydaemon-claude.sh (window name, then session name), or a
   # hand-started window and a /launch of the same folder get different sessions.
   local wname sess
   wname="$(printf %s "$(basename "$DIR")" | tr -cs '[:alnum:]._-' '_')"
@@ -201,7 +203,7 @@ open_in_tmux() {
     echo "tmux session $sess already exists — attach with: tmux attach -t $sess" >&2
     return 1
   fi
-  tmux new-session -d -s "$sess" -c "$DIR" "bash ./tg-claude.sh" || return 1
+  tmux new-session -d -s "$sess" -c "$DIR" "bash ./$SCRIPT" || return 1
   [ "${TG_MAC_NUDGE:-1}" = 0 ] || nudge_tmux "$sess"
   echo "launched '$NAME' in tmux session $sess -> $DIR"
 }

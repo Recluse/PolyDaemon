@@ -62,7 +62,7 @@ con.commit()"'
 ## Сопутствующие факты (чтобы не переоткрывать)
 
 - **`--continue` без локальной сессии роняет claude** — лаунчер
-  `clients/tg-claude.sh` с 2026-07-07 добавляет флаг только если есть
+  `clients/polydaemon-claude.sh` с 2026-07-07 добавляет флаг только если есть
   `~/.claude/projects/<encoded-cwd>/*.jsonl` (encoding: не-алфанум → `-`).
 - **Виндовые окна шлют `instance_name='main'`** (видно в bot.db) — поэтому
   реестр ключуется по workspace_name; чинить на виндовой стороне до

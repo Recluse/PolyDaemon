@@ -82,7 +82,7 @@ function connect(): Promise<void> {
     const fail = (e: unknown) => { wsReady = null; reject(new Error(`codex ws: ${e}`)) }
     sock.onopen = () => {
       ws = sock
-      void rpc('initialize', { clientInfo: { name: 'tg-bridge-adapter', title: 'tg-bridge', version: '0.1' } })
+      void rpc('initialize', { clientInfo: { name: 'polydaemon-adapter', title: 'PolyDaemon', version: '0.1' } })
         .then(() => { wsReady = null; resolve() })
         .catch(fail)
     }
@@ -203,7 +203,7 @@ function standaloneTuiFor(cwd: string): number | null {
 export async function deliverToCodex(cwd: string, text: string): Promise<{ ok: boolean; reason?: string; thread_id?: string; mode?: string }> {
   const tuiPid = standaloneTuiFor(cwd)
   if (tuiPid) {
-    return { ok: false, reason: `standalone codex TUI (pid ${tuiPid}) holds this cwd — restart it via codex --remote (tg-codex.sh)` }
+    return { ok: false, reason: `standalone codex TUI (pid ${tuiPid}) holds this cwd — restart it via codex --remote (polydaemon-codex.sh)` }
   }
   const threads = await threadsFor(cwd)
   if (threads.length === 0) {

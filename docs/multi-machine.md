@@ -119,7 +119,7 @@ plugin writes locally, so they need nothing from the bot host.
 
 ### The launchers
 
-Put `tg-claude.sh` (macOS, Linux) or `tg-claude.cmd` (Windows) in each project,
+Put `polydaemon-claude.sh` (macOS, Linux) or `polydaemon-claude.cmd` (Windows) in each project,
 as in getting-started. A window started this way registers with the bot within a
 few seconds and shows up in `/window`.
 

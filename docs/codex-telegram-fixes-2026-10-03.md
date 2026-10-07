@@ -43,7 +43,7 @@ inbox files and machine-specific MCP configuration are not committed.
 4. Follow [Codex setup](codex.md): run `bun run agent/agentd.ts` or install the
    adjusted LaunchAgent from `agent/launchd/`. `~/.tg-bridge/agent.toml` must
    exist. Set `TG_CODEX_BIN` if the service cannot resolve Codex from PATH.
-5. **Copy** `clients/tg-codex.sh` into each project and `chmod +x` it, then
+5. **Copy** `clients/polydaemon-codex.sh` into each project and `chmod +x` it, then
    launch that copy. The script chooses its own directory as workspace; running
    the original from another cwd selects the bridge checkout. It attaches with
    `--remote` and explicit `--cd`, and resumes the folder's last known thread.
@@ -56,7 +56,7 @@ inbox files and machine-specific MCP configuration are not committed.
 
 ## Windows entry points
 
-Use PowerShell 7 and `clients/tg-codex.ps1 -Workspace <project> resume`.
+Use PowerShell 7 and `clients/polydaemon-codex.ps1 -Workspace <project> resume`.
 `-Check` checks daemon readiness without opening a UI. The project
 `start-codex.cmd` invokes this script with `%CD%`. A copy was installed in
 TgInviteSystem. Remove the old `--no-daemon` standalone path: the Windows

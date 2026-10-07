@@ -51,7 +51,7 @@ function registryRpc(path: string, body: unknown) {
 
 export async function registerRemote(row: InstanceRow): Promise<void> {
   const r = await registryRpc('/register', row)
-  if (!r.ok) log(`tg-bridge: remote register failed (${r.status}): ${JSON.stringify(r.data)}`)
+  if (!r.ok) log(`PolyDaemon: remote register failed (${r.status}): ${JSON.stringify(r.data)}`)
 }
 
 // Returns false if the bot didn't recognize our id (e.g. it restarted and lost
@@ -80,7 +80,7 @@ export async function heartbeatRemote(id: string): Promise<boolean> {
   if (r.ok) setOthersTouching((r.data as any)?.touched_by_others)
   if (r.status === 404) return false
   if (!r.ok) {
-    log(`tg-bridge: remote heartbeat failed (${r.status})`)
+    log(`PolyDaemon: remote heartbeat failed (${r.status})`)
     return true
   }
   // Present (object or null) => the bot is topic-binding-aware; adopt it as the
@@ -111,7 +111,7 @@ export async function recordRouteRemote(
   instance: string,
 ): Promise<void> {
   const r = await rpc('/route', { chat_id: chatId, message_id: messageId, instance })
-  if (!r.ok) log(`tg-bridge: remote route record failed (${r.status}): ${JSON.stringify(r.data)}`)
+  if (!r.ok) log(`PolyDaemon: remote route record failed (${r.status}): ${JSON.stringify(r.data)}`)
 }
 
 // Use the live registered workspace name, including the Codex handshake override.

@@ -74,7 +74,7 @@ export function registerInstance(port: number): void {
     host: row.host, port: row.port, auth_token: row.auth_token,
     instance_name: row.instance_name, workspace_name: row.workspace_name,
     cwd: row.cwd, pid: row.pid, parent_pid: row.parent_pid, started_at: row.started_at,
-    // Per-window identity minted by the launcher (see clients/tg-claude.sh) and
+    // Per-window identity minted by the launcher (see clients/polydaemon-claude.sh) and
     // inherited by every hook. Empty for a window started outside the launcher —
     // Zed's external agent starts claude itself — so readers must keep a fallback.
     window_uid: process.env.TG_WINDOW_UID ?? '',

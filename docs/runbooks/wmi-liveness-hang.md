@@ -72,7 +72,7 @@ All in the **plugin** (`channel-plugin/src/registry.ts`) plus launch env:
 4. **Set `TG_BRIDGE_FORCE_CHANNELS=1` in both launch paths** so the WMI
    parent-probe never runs in practice:
    - the terminal launcher (then a personal `start-claude.ps1`; today every
-     launcher, `tg-claude.cmd` and `clients/tg-claude.sh`, sets it).
+     launcher, `polydaemon-claude.cmd` and `clients/polydaemon-claude.sh`, sets it).
    - `~/.claude.json` → `mcpServers.tg-bridge.env` (every VSCode-launched window).
    Safe here because *all* windows are started with
    `--dangerously-load-development-channels` (terminal launcher + the VS Code

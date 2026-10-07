@@ -11,13 +11,13 @@ import unittest
 
 class CodexLauncherTest(unittest.TestCase):
     def test_remote_workspace_for_new_and_resumed_sessions(self):
-        launcher = Path(os.environ.get("TG_CODEX_LAUNCHER", Path(__file__).with_name("tg-codex.sh")))
+        launcher = Path(os.environ.get("TG_CODEX_LAUNCHER", Path(__file__).with_name("polydaemon-codex.sh")))
         for resume, fresh in (("", False), ("known-thread", False), ("known-thread", True)):
             with self.subTest(resume=resume, fresh=fresh), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp).resolve()
                 workspace = root / "Project # test & space"
                 workspace.mkdir()
-                shutil.copyfile(launcher, workspace / "tg-codex.sh")
+                shutil.copyfile(launcher, workspace / "polydaemon-codex.sh")
                 home = root / "home"
                 config = home / ".tg-bridge"
                 config.mkdir(parents=True)
@@ -48,7 +48,7 @@ class CodexLauncherTest(unittest.TestCase):
                     "TG_CODEX_NEW": "1" if fresh else "0",
                 }
                 result = subprocess.run(
-                    ["bash", str(workspace / "tg-codex.sh"), "--model", "test-model"],
+                    ["bash", str(workspace / "polydaemon-codex.sh"), "--model", "test-model"],
                     cwd=root, env=env, text=True, capture_output=True, check=True,
                 )
                 call = json.loads(result.stdout.splitlines()[-1])

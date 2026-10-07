@@ -14,7 +14,7 @@ export function bridgeEntry(repo: string) {
   // Existing installations already keep the same credentials in Codex's MCP entry.
   const config = Bun.TOML.parse(readFileSync(join(homedir(), '.codex/config.toml'), 'utf8')) as any
   const source = config.mcp_servers?.['tg-bridge']?.env
-  if (!source?.TG_BOT_TOKEN || !source?.TG_BRIDGE_AUTH_TOKEN) throw new Error('No configured tg-bridge MCP credentials')
+  if (!source?.TG_BOT_TOKEN || !source?.TG_BRIDGE_AUTH_TOKEN) throw new Error('No configured PolyDaemon MCP credentials (legacy tg-bridge entry)')
   return { command: process.execPath, args: ['run', join(repo, 'channel-plugin/server.ts')],
     env: Object.fromEntries(Object.entries(source).filter(([key]) => key.startsWith('TG_') && !['TG_WINDOW_UID', 'TG_BRIDGE_INSTANCE_NAME'].includes(key))) }
 }

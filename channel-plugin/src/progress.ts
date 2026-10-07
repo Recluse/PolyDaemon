@@ -63,7 +63,7 @@ export async function startProgress(chatId: string, replyToMessageId: number): P
       pendingTimer: null,
     }
   } catch (e) {
-    log(`tg-bridge: startProgress failed: ${e}`)
+    log(`PolyDaemon: startProgress failed: ${e}`)
   }
 }
 
@@ -128,7 +128,7 @@ async function flushProgress(): Promise<void> {
   } catch (e) {
     // Edits routinely fail when nothing changed or the message is gone — log
     // and move on so a broken status never blocks real output.
-    log(`tg-bridge: flushProgress edit failed: ${e}`)
+    log(`PolyDaemon: flushProgress edit failed: ${e}`)
   }
 }
 

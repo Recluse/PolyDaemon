@@ -1,5 +1,5 @@
 @echo off
-REM tg-claude.cmd - launch claude in this workspace with tg-bridge + bypassPermissions.
+REM polydaemon-claude.cmd - launch claude in this workspace with tg-bridge + bypassPermissions.
 REM --name is derived from this file's parent folder, so the same .cmd works dropped into any workspace.
 REM Extra args (%*) are passed through to claude. Example: tg-claude --model claude-opus-4-8
 setlocal enableextensions
@@ -37,7 +37,7 @@ REM A window, never a headless run: the plugin reads CLAUDE_CODE_ENTRYPOINT=sdk-
 REM as headless, and a value inherited from another claude would hide this window.
 set "CLAUDE_CODE_ENTRYPOINT="
 REM A per-window identity its hooks inherit, so they find THIS window's plugin
-REM even when another window has the same folder (as clients/tg-claude.sh does).
+REM even when another window has the same folder (as clients/polydaemon-claude.sh does).
 if not defined TG_WINDOW_UID set "TG_WINDOW_UID=%COMPUTERNAME%-%RANDOM%%RANDOM%%RANDOM%"
 call claude.cmd --dangerously-load-development-channels server:tg-bridge %CONT% --name "%NAME%" --permission-mode bypassPermissions %*
 endlocal

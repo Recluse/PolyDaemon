@@ -6,7 +6,8 @@ Drive Claude Code, Codex and OpenCode windows from Telegram. Message a bot, and 
 in a specific agent window; the answer, and the work in progress, come back
 to the chat. Several windows at once, on one machine or several.
 
-*Formerly tg-bridge — you will still see that name in commands and folder names.*
+Launchers use `polydaemon-<agent>`. Some integration IDs retain the former
+`tg-bridge` name for [backward compatibility](docs/naming.md).
 
 > **Status:** early MIT release, not a polished product. The Claude adapter uses
 > Claude Code's channels, which are a research preview
@@ -86,8 +87,8 @@ For several machines against one bot, see
 | `tg-bot/` | The router bot. Owns the bot token, is the only thing polling Telegram, routes to windows, keeps topics and the window registry. Entry point: `tgbridge.py`. |
 | `channel-plugin/` | The MCP server loaded into each Claude Code window. Takes messages from the bot, pushes them into Claude, sends replies to Telegram. |
 | `hooks/` | The Claude Code hooks, and `install.py` to register them. |
-| `clients/` | Window launchers (`tg-claude.sh` for macOS/Linux), the per-machine launch agent, Codex helpers. |
-| `tg-claude.cmd`, `launch-ws.ps1` | The Windows launcher, and the script that starts a window from `/launch`. |
+| `clients/` | Window launchers (`polydaemon-claude.sh` for macOS/Linux), the per-machine launch agent, Codex helpers. |
+| `polydaemon-claude.cmd`, `launch-ws.ps1` | The Windows launcher, and the script that starts a window from `/launch`. |
 | `agent/` | A per-machine daemon for Codex windows and orphan cleanup. |
 | `vscode-extension/` | Optional: spawns a Claude terminal and an approval UI in VS Code. |
 | `docs/` | Everything else — see below. |

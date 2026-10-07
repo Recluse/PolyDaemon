@@ -28,7 +28,7 @@ The launcher uses `~/.config/polydaemon/machine.env` when present, otherwise
 the existing `mcp_servers.tg-bridge.env` in `~/.codex/config.toml`. Credentials
 are inherited through the environment, not exposed in argv or repository files.
 
-Copy `clients/tg-opencode.sh` to a project root with mode0755. It starts a
+Copy `clients/polydaemon-opencode.sh` to a project root with mode0755. It starts a
 private native server for that folder and passes an explicit root session ID.
 It cannot attach a child or foreign-workspace session or a custom remote
 server. `TG_OPENCODE_NEW=1` starts fresh without removing history.
