@@ -1,0 +1,7 @@
+{
+  "tgCopilotBridge.port": 3100,
+  "tgCopilotBridge.host": "127.0.0.1",
+  "tgCopilotBridge.instanceName": "main",
+  "tgCopilotBridge.authToken": "",
+  "files.eol": "\n"
+}

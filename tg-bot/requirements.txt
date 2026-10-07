@@ -1,0 +1,5 @@
+# Pinned to what's actually run in prod (the venv had drifted from 21/0.27).
+# The networked registry uses only the stdlib http.server — no new dependency.
+python-telegram-bot[job-queue]==22.*
+httpx==0.28.*
+pyyaml==6.*

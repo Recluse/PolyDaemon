@@ -1,0 +1,167 @@
+telegram:
+  # From @BotFather. Keep the real value ONLY in config.yaml (gitignored).
+  bot_token: "123456789:AA-your-bot-token-here"
+
+  # Bot API endpoint. The cloud one works out of the box and is what the code
+  # uses when these two lines are absent. Through it a window can send you files
+  # up to 50MB; with your own telegram-bot-api server that becomes 1990MB, and
+  # files you send arrive without a size limit (docs/large-files.md). To use it:
+  #   api_base_url: "http://127.0.0.1:8081"
+  #   use_local_bot_api: true
+  # (and give the channel plugin the same address as TG_API_ROOT). The example
+  # used to ship with the local server switched ON, so a copy-as-is config talked
+  # to a server that did not exist and the bot never reached Telegram at all.
+  api_base_url: "https://api.telegram.org"
+  use_local_bot_api: false
+
+  # Forum group for per-window topics. Create a group, enable Topics, add the
+  # bot as admin with "Manage Topics", then run /chatid in the group and paste
+  # the -100… id here, e.g.  forum_chat_id: -1001234567890
+  # Empty = feature off (only the private chat is used) — which is what this
+  # example ships with, so a copy-as-is config does not point the bot at a chat
+  # that does not exist and retry creating topics in it every tick.
+  forum_chat_id: ""
+
+  # How the forum is laid out.
+  #
+  #   per-window (default) — one topic per window. The thread says who you are
+  #     talking to, so a message typed in it goes to that window and nowhere
+  #     else. Best when the windows work on separate things.
+  #
+  #   shared — every window in ONE topic, each message prefixed with the window
+  #     it came from ("[api-gateway] ..."). Use it when the windows are working
+  #     on one thing across platforms and machines and you want to read them
+  #     as a single conversation. Address one window by starting the message
+  #     with its name: "@api-gateway check the logs". A message that names
+  #     nobody goes to your active window, exactly as it would in a DM.
+  #
+  # Switching to shared re-binds each window to the shared topic and leaves the
+  # old per-window topics in the group — nothing is deleted, and switching back
+  # restores them.
+  topic_mode: per-window
+
+  # Title of that one topic. Empty = a localised default ("Agents"/"Агенты").
+  shared_topic_title: ""
+
+  # Whitelist by Telegram user ID. REQUIRED: the bot refuses to start with an
+  # empty list. It types into live Claude Code sessions running in
+  # bypassPermissions, so an open door here is arbitrary code execution on the
+  # machines those windows live on. To learn your id, start the bot with any
+  # placeholder here and message it: the refusal tells you your own id.
+  allowed_users:
+    - 11111111
+
+bot:
+  ping_timeout: 5.0
+  post_timeout: 10.0
+  default_instance: ""
+  # How often (seconds) to rescan the bot.db instances table for window
+  # registrations. On change, the bot pushes a new keyboard to allowed users.
+  # Set to 0 to disable.
+  instance_poll_interval: 3.0
+
+  # --- Networked registry (cross-machine) -------------------------------------
+  # Inbound HTTP server that lets plugins on OTHER machines register over the
+  # mesh (they can't share this bot.db). Leave registry_bind_host EMPTY to keep
+  # it OFF (single-machine deploy — plugins write bot.db directly). To enable,
+  # bind it to the MESH interface only (never 0.0.0.0):
+  #   registry_bind_host: "198.51.100.2"      # the bot host's mesh IP
+  #   registry_port: 8090
+  #   registry_enroll_token: "<32+ byte shared secret>"   # plugins send it as Bearer
+  # The registry REFUSES TO START on a non-loopback bind if this token is empty
+  # or < 32 bytes (fail-closed — an unauthenticated mesh /register is an open
+  # door). Generate one with e.g. `openssl rand -hex 32`. Loopback binds may
+  # leave it empty.
+  registry_bind_host: ""
+  registry_port: 8090
+  registry_enroll_token: ""
+  # Roaming plugins advertise a reachable IP; rows whose host is loopback OR inside
+  # one of these subnets are accepted, anything else is dropped (token-exfil guard).
+  # Accepts a single subnet (string) OR a list — list several mesh LANs to treat them
+  # as equal first-class peers. Set it to whatever subnet(s) the plugins ADVERTISE —
+  # e.g. the home LAN "192.0.2.0/24" where the windows live (the bot on the bot host
+  # dials them back at those addresses) alongside the colo "198.51.100.0/24".
+  mesh_subnet:
+    - "192.0.2.0/24"   # home LAN — windows plugins
+    - "198.51.100.0/24"      # colo LAN
+  # Anti-spoof: a remote plugin must advertise its own source IP, and rows are keyed
+  # by it. Set FALSE when the registry is behind NAT (Docker-published port, or a
+  # router that rewrites the source) so the seen source IP differs from the plugin's
+  # advertised mesh IP — otherwise every /register is wrongly rejected (403). The
+  # Bearer enroll token + mesh_subnet allowlist remain the gate. Default true.
+  registry_verify_source_ip: true
+  # Cross-machine /launch. When the bot runs apart from the workspaces (e.g. on
+  # bot-host while the windows are on the Windows PC), point this at that
+  # machine's launch-agent (clients/launch-agent.ts) and the bot POSTs /launch
+  # to it over the mesh (Bearer == registry_enroll_token) instead of spawning
+  # PowerShell locally. EMPTY = bot is co-located with the workspaces → spawn
+  # launch-ws.ps1 directly (the original single-machine behaviour).
+  #   launch_agent_url: "http://198.51.100.5:8091"
+  launch_agent_url: ""
+  # SEVERAL machines. One entry per computer holding workspaces; /launch then
+  # shows one tab per `label` and starts a workspace on the machine that owns
+  # its folder. Takes precedence over launch_agent_url above.
+  #
+  # `prefixes` are the working-tree roots that machine owns, and they are what
+  # routes a launch — NOT the shape of the path. Two machines can hold a folder
+  # of the same name, and inferring "/Users/… means the Mac" would mis-route the
+  # moment a second POSIX box joins the mesh. An entry with no prefixes owns
+  # everything, which is only sensible when it is the only entry.
+  #
+  # Run clients/launch-agent.ts on each machine (it picks launch-ws.ps1 on
+  # Windows and clients/launch-ws.sh elsewhere). A folder no entry claims is not
+  # offered at all, and the bot logs a warning naming it.
+  #
+  # A Windows prefix goes in SINGLE quotes. In double quotes YAML reads the
+  # backslash as an escape, so a double-quoted "C:\projects" is an
+  # invalid-escape parse error and only "C:\\projects" means what you wanted.
+  # Single quotes are literal.
+  #
+  #   launch_agents:
+  #     - label: "Mac"
+  #       url: "http://198.51.100.5:8091"
+  #       prefixes: ['/Users/me/Work']
+  #     - label: "Windows"
+  #       url: "http://198.51.100.7:8091"
+  #       prefixes: ['C:\projects']
+  launch_agents: []
+  # Host label in infrastructure alerts. In Docker, set the physical server name;
+  # otherwise the container hostname is shown. Empty uses the system hostname.
+  host_name: ""
+  # The bot checks its HOME/state filesystem every 10 min, not remote workspace
+  # disks. Warn below this many GiB (re-arms after +1 GiB recovery). 0 disables.
+  # By default the warning goes to any known forum chat;
+  # set low_disk_warn_chat_id to override.
+  low_disk_warn_gb: 2
+  #   low_disk_warn_chat_id: -1001234567890
+
+  # UI language for everything the bot says and for its reply-keyboard labels.
+  # Shipped default is "en"; "ru" is also provided. Add a locale by dropping a
+  # table next to bot/locales/en.py — bot/i18n.py checks that every locale has
+  # the same keys AND the same {placeholders}. An unknown value here logs a
+  # warning and falls back to English rather than failing to start.
+  # locale: en
+
+  # --- Forum topic cosmetics --------------------------------------------------
+  # Icon per topic, chosen by the FIRST keyword that appears in the window name
+  # (case-insensitive substring), so order matters — put the more specific
+  # keyword first when two would both match. Emojis must be from Telegram's
+  # fixed topic-icon set; anything else silently falls back to the default
+  # colour. Omit the whole key to use the built-in generic keywords.
+  # topic_icons:
+  #   - customs: "🛃"        # more specific than "code", so it comes first
+  #   - infra: "💻"
+  #   - api: "📡"
+  # topic_icon_default: "📁"
+  # Connection marker prepended to the topic title (plain text, not the icon).
+  # topic_status_online: "🟢"
+  # topic_status_offline: "🔴"
+
+  # Independent provider-outage watch (status.claude.com / status.openai.com).
+  # Lives in the bot on purpose: when the model API dies, the windows are what go
+  # silent, so the reporter must not be one of them. Notices go to the same chat
+  # as the low-disk warning. Note a status page LAGS — it catches declared
+  # incidents, not transient 529 bursts; the plugin-side api-error surfacing is
+  # the complementary half.
+  # status_watch_enabled: true
+  # status_poll_interval: 120.0

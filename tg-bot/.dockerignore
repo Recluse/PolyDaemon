@@ -1,0 +1,8 @@
+# Keep the image lean + never bake secrets/state into it.
+config.yaml
+.venv/
+__pycache__/
+*.pyc
+bot-run*.log
+*.log
+.pytest_cache/

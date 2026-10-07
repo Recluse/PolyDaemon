@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tg-bridge.agentd</string>
+
+  <!-- Adjust the bun path (`which bun`) and the repo path for the machine. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/bun</string>
+    <string>run</string>
+    <string>/CHANGE/ME/tg-bridge/agent/agentd.ts</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- agentd logs to stderr with an `agentd:` prefix. -->
+  <key>StandardOutPath</key>
+  <string>/tmp/tg-bridge-agentd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/tg-bridge-agentd.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- osascript / claude need a sane PATH under launchd. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

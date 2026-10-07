@@ -1,0 +1,33 @@
+# --- Secrets (NEVER commit — live bot token / auth token live here) ---
+tg-bot/config.yaml
+.claude/settings.local.json
+**/.env
+*.env
+
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+tg-bot/.pytest_cache/
+tg-bot/.mypy_cache/
+
+# --- Node / bun ---
+node_modules/
+channel-plugin/node_modules/
+vscode-extension/node_modules/
+vscode-extension/out/
+vscode-extension/*.vsix
+*.tsbuildinfo
+bun.lockb
+
+# --- VS Code dev host (caches, not source) ---
+.vscode-devhost/
+
+# --- Runtime / logs ---
+logs/
+*.log
+
+# --- Junk: Windows reserved name created by `bun build --outfile=/dev/null` ---
+# (git can't even index a file literally named `nul`; keep it out of the way)
+nul
+**/nul
