@@ -66,6 +66,7 @@ const CAN_LAUNCH = IS_WINDOWS || process.platform === 'darwin'
 // parse a leading-dash token as a parameter to launch-ws.ps1). Defence-in-depth
 // on the arg parser; the spawn array form already blocks shell-metachar injection.
 const SAFE_NAME = /^[\w.][\w .\-]*$/
+const AGENTS = ['claude', 'codex', 'opencode', 'mimo']
 
 // Constant-time Bearer check (this server is mesh-exposed). timingSafeEqual needs
 // equal-length buffers, so the length guard is an unavoidable length-only leak.
@@ -84,7 +85,7 @@ function safeDir(v: unknown): string {
   return absolute && d.length <= 1024 && !d.includes('\0') ? d : ''
 }
 
-function launch(name: string, dir: string): void {
+function launch(name: string, dir: string, agent: string, fresh: boolean): void {
   // Fire-and-forget. The launch script opens its OWN visible window (Windows:
   // Start-Process + a TUI keystroke nudge; macOS: a .command handed to
   // Terminal); windowsHide only hides this PowerShell host (mirrors
@@ -92,8 +93,8 @@ function launch(name: string, dir: string): void {
   // child exits seconds after spawning the real window; launches are rare.
   const [cmd, args] = IS_WINDOWS
     ? ['powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT, name,
-        ...(dir ? ['-Dir', dir] : [])]]
-    : ['bash', [SCRIPT, name, ...(dir ? [dir] : [])]] as [string, string[]]
+        ...(dir ? ['-Dir', dir] : []), '-Agent', agent, ...(fresh ? ['-NewSession'] : [])]]
+    : ['bash', [SCRIPT, name, dir, agent, fresh ? 'new' : 'resume']] as [string, string[]]
   // The script's own output goes to this agent's log: it is the only place that
   // says WHY a launch fell back to Terminal.app or found no workspace.
   const child = spawn(cmd as string, args as string[], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true })
@@ -199,7 +200,7 @@ try {
     async fetch(req) {
       const url = new URL(req.url)
       if (req.method === 'GET' && url.pathname === '/health') {
-        return Response.json({ ok: true })
+        return Response.json({ ok: true, agents: AGENTS, new_session: true })
       }
       if (!authed(req)) return new Response('Unauthorized', { status: 401 })
       if (req.method === 'GET' && url.pathname === '/version') {
@@ -223,10 +224,16 @@ try {
         } finally { updating = false }
       }
       if (req.method === 'POST' && url.pathname === '/launch') {
-        let body: { name?: string; cwd?: string }
+        let body: { name?: string; cwd?: string; agent?: string; new_session?: boolean }
         try { body = (await req.json()) as typeof body }
         catch { return new Response('Bad JSON', { status: 400 }) }
+        if (!body || typeof body !== 'object') return new Response('Bad JSON', { status: 400 })
         const name = String(body.name ?? '')
+        const agent = body.agent ?? 'claude'
+        const fresh = body.new_session ?? false
+        if (!AGENTS.includes(agent) || typeof fresh !== 'boolean') {
+          return Response.json({ ok: false, reason: 'invalid agent or session mode' }, { status: 400 })
+        }
         if (!SAFE_NAME.test(name)) {
           return Response.json({ ok: false, reason: 'unsafe or empty name' }, { status: 400 })
         }
@@ -234,8 +241,14 @@ try {
           return Response.json({ ok: false, reason: `no window launcher here — ${process.platform === 'linux' ? 'install tmux' : 'set TG_LAUNCH_SCRIPT'}` }, { status: 501 })
         }
         const dir = safeDir(body.cwd)
-        launch(name, dir)
-        console.log(`launch-agent: launch ${name}${dir ? ` in ${dir}` : ''}`)
+        if (body.cwd && !dir) return Response.json({ ok: false, reason: 'invalid cwd' }, { status: 400 })
+        const extension = IS_WINDOWS ? 'cmd' : 'sh'
+        if (!existsSync(SCRIPT) || (dir && !existsSync(resolve(dir, `polydaemon-${agent}.${extension}`))
+            && !(agent === 'claude' && !fresh && existsSync(resolve(dir, `tg-claude.${extension}`))))) {
+          return Response.json({ ok: false, reason: 'selected launcher not installed in workspace' }, { status: 404 })
+        }
+        launch(name, dir, agent, fresh)
+        console.log(`launch-agent: launch ${name} agent=${agent} new=${fresh}${dir ? ` in ${dir}` : ''}`)
         return Response.json({ ok: true })
       }
       return new Response('Not Found', { status: 404 })

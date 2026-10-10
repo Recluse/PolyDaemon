@@ -14,6 +14,7 @@ from bot.common import get_bridge_client, get_config, get_storage, refresh_insta
 
 
 logger = logging.getLogger(__name__)
+AGENT_LABELS = {"claude": "Claude", "codex": "Codex", "opencode": "OpenCode", "mimo": "MiMo"}
 
 # A workspace name is a folder basename — letters/digits/space/dot/dash/underscore,
 # and must NOT start with '-' (PowerShell would parse a leading-dash token as a
@@ -113,14 +114,12 @@ _unclaimed_warned: set[str] = set()
 
 
 def list_launchable(
-    context: ContextTypes.DEFAULT_TYPE, agent: LaunchAgent | None = None
+    context: ContextTypes.DEFAULT_TYPE, agent: LaunchAgent | None = None, kind: str = "claude"
 ) -> list[tuple[str, str]]:
-    """Registered-but-not-running workspaces that can be started.
+    """Known folders without a live window of the selected coding agent.
 
-    "Registered" = has a row in `window_topics` (was connected at least once,
-    so the bot knows its cwd and its forum topic). "Can be started" = a
-    tg-claude launcher exists at that cwd. Currently-live windows are excluded
-    by canonical-cwd match against the runtime registry.
+    Agent-specific topic keys are collapsed to the physical workspace path.
+    Remote launch agents check whether the selected launcher is installed.
 
     With `agent`, only the workspaces THAT machine owns. Without it, everything
     any configured agent owns — which is the whole list when there is one agent
@@ -128,6 +127,9 @@ def list_launchable(
 
     Returns [(title, cwd)] sorted by title.
     """
+    from bot.topics import instance_agent
+    if kind not in AGENT_LABELS:
+        raise ValueError("unknown coding agent")
     storage = get_storage(context)
     agents = launch_agents(context)
     # Remote mode: the workspaces live on another machine (the bot runs on
@@ -136,14 +138,22 @@ def list_launchable(
     # on-disk check.
     remote = bool(agents)
     live_cwds = {
-        (inst.cwd or "").lower()
+        _norm_path(inst.cwd)
         for inst in refresh_instances(context)
+        if instance_agent(inst) == kind
     }
     result: list[tuple[str, str]] = []
-    for workspace_id, _chat, _thread, title in storage.all_topics():
-        if workspace_id.lower() in live_cwds:
+    seen: set[str] = set()
+    for workspace_id, _chat, _thread, _title in storage.all_topics():
+        base, sep, suffix = workspace_id.rpartition("#")
+        cwd = base if sep and suffix in AGENT_LABELS else workspace_id
+        if not (cwd.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", cwd)):
             continue
-        if not remote and not _has_local_launcher(workspace_id):
+        key = _norm_path(cwd)
+        if key in seen or key in live_cwds:
+            continue
+        seen.add(key)
+        if not remote and not _has_local_launcher(cwd, kind):
             continue
         # "Claimed by anyone" and "claimed by THIS machine" are two separate
         # questions, and the warning belongs to the first one. Nesting it in the
@@ -151,7 +161,7 @@ def list_launchable(
         # it matters: with tabs on screen every call names an agent, so an
         # unclaimed folder was dropped in total silence — the exact failure this
         # warning exists to prevent. Found auditing this code, 2026-09-24.
-        if agents and not any(_owns(a, workspace_id) for a in agents):
+        if agents and not any(_owns(a, cwd) for a in agents):
             if workspace_id not in _unclaimed_warned:
                 _unclaimed_warned.add(workspace_id)
                 logger.warning(
@@ -159,23 +169,24 @@ def list_launchable(
                     "a bot.launch_agents prefixes list", workspace_id,
                 )
             continue
-        if agent is not None and not _owns(agent, workspace_id):
+        if agent is not None and not _owns(agent, cwd):
             continue
-        result.append((title, workspace_id))
+        result.append((cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1], cwd))
     return sorted(result, key=lambda t: t[0].lower())
 
 
-def _has_local_launcher(cwd: str) -> bool:
+def _has_local_launcher(cwd: str, kind: str = "claude") -> bool:
     """Co-located bot only: does this folder have a launcher we can run here?
     Both names, because the co-located case is a Windows PC today and a Mac
     tomorrow and the check should not be the thing that decides."""
-    return any((Path(cwd) / name).is_file() for name in (
-        "polydaemon-claude.cmd", "polydaemon-claude.sh", "tg-claude.cmd", "tg-claude.sh",
-    ))
+    names = [f"polydaemon-{kind}.cmd", f"polydaemon-{kind}.sh"]
+    if kind == "claude":
+        names += ["tg-claude.cmd", "tg-claude.sh"]
+    return any((Path(cwd) / name).is_file() for name in names)
 
 
 async def launch_workspace(
-    context: ContextTypes.DEFAULT_TYPE, name: str, cwd: str = ""
+    context: ContextTypes.DEFAULT_TYPE, name: str, cwd: str = "", kind: str = "claude", new_session: bool = False
 ) -> None:
     """Launch the window for `name` (folder basename) in the tree at `cwd`.
 
@@ -208,7 +219,11 @@ async def launch_workspace(
     and feeds a `-File … <name>` invocation). Raises on a missing script /
     unreachable agent / no agent for that tree, so the caller can surface it.
     """
-    if not _SAFE_NAME.match(name):
+    if kind not in AGENT_LABELS or not isinstance(new_session, bool):
+        raise ValueError("invalid launch agent or session mode")
+    if cwd:
+        name = cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if not _SAFE_NAME.fullmatch(name):
         raise ValueError(f"unsafe workspace name: {name!r}")
     bot_config = get_config(context).get("bot", {})
     agents = launch_agents(context)
@@ -228,7 +243,7 @@ async def launch_workspace(
                 f"cwd was given for {name!r}"
             )
         token = str(bot_config.get("registry_enroll_token", "")).strip()
-        await get_bridge_client(context).post_launch(agent.url, token, name, cwd)
+        await get_bridge_client(context).post_launch(agent.url, token, name, cwd, kind, new_session)
         logger.info("launch requested for workspace %r via agent %s (%s)",
                     name, agent.url, agent.label or "unlabelled")
         return
@@ -236,13 +251,13 @@ async def launch_workspace(
     if sys.platform == "win32":
         script, argv, flags = LAUNCH_SCRIPT, [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", str(LAUNCH_SCRIPT), name] + (["-Dir", cwd] if cwd else []), _CREATE_NO_WINDOW
+            "-File", str(LAUNCH_SCRIPT), name, "-Agent", kind] + (["-Dir", cwd] if cwd else []) + (["-NewSession"] if new_session else []), _CREATE_NO_WINDOW
     else:
         # macOS: an iTerm2 tab or Terminal window; Linux: a detached tmux session.
         if sys.platform != "darwin" and not shutil.which("tmux"):
             raise NotImplementedError("/launch on Linux needs tmux installed")
         script, argv, flags = MAC_LAUNCH_SCRIPT, [
-            "bash", str(MAC_LAUNCH_SCRIPT), name] + ([cwd] if cwd else []), 0
+            "bash", str(MAC_LAUNCH_SCRIPT), name, cwd, kind, "new" if new_session else "resume"], 0
     if not script.is_file():
         raise FileNotFoundError(f"launch script not found: {script}")
     subprocess.Popen(
@@ -264,7 +279,7 @@ def resolve_agent_label(context: ContextTypes.DEFAULT_TYPE, token: str) -> str:
 
 
 def build_launch_view(
-    context: ContextTypes.DEFAULT_TYPE, label: str = ""
+    context: ContextTypes.DEFAULT_TYPE, label: str = "", kind: str = "claude", new_session: bool = False
 ) -> tuple[str, object | None]:
     """The /launch picker for one machine: (text, keyboard) — keyboard None when
     there is nothing to offer anywhere.
@@ -283,14 +298,12 @@ def build_launch_view(
     if tabs and label not in tabs:
         label = tabs[0]
     agent = next((a for a in agents if a.label and a.label == label), None)
-    workspaces = list_launchable(context, agent)
-    if not workspaces and not tabs:
-        return t("common.launch_all_running"), None
+    workspaces = list_launchable(context, agent, kind)
     if not workspaces:
         # An empty MACHINE is not an empty system — keep the tabs so the other
         # one is still one tap away instead of a dead end.
-        return t("cb.launch_none_here", machine=label), build_launch_keyboard([], tabs, label)
-    return t("cb.launch_pick"), build_launch_keyboard(workspaces, tabs, label)
+        return t("cb.launch_none_here", machine=label or AGENT_LABELS[kind]), build_launch_keyboard([], tabs, label, kind, new_session)
+    return t("cb.launch_pick"), build_launch_keyboard(workspaces, tabs, label, kind, new_session)
 
 
 if __name__ == "__main__":  # self-check: PYTHONPATH=tg-bot python3 tg-bot/bot/launcher.py
@@ -409,7 +422,7 @@ if __name__ == "__main__":  # self-check: PYTHONPATH=tg-bot python3 tg-bot/bot/l
 
     class _Posts:
         def __init__(self): self.calls = []
-        async def post_launch(self, url, token, name, cwd=""): self.calls.append((url, name, cwd))
+        async def post_launch(self, url, token, name, cwd="", kind="claude", new_session=False): self.calls.append((url, name, cwd))
 
     def _launch(agents_cfg, name, cwd=""):
         posts = _Posts()

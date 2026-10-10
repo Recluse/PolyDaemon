@@ -55,6 +55,13 @@ def forum_chat_id(config: dict[str, Any]) -> int | None:
         return None
 
 
+def instance_agent(instance: RuntimeInstance) -> str:
+    for agent in ("codex", "opencode", "mimo"):
+        if instance.display_name.endswith(f"-{agent}") or instance.instance_name.endswith(f"-{agent}"):
+            return agent
+    return "claude"
+
+
 def resolve_workspace_id(instance: RuntimeInstance) -> str:
     """Host-stable binding key. Slice 1: raw cwd (so the plugin can match by
     process.cwd()); fall back to the instance key for older plugins.
@@ -63,10 +70,8 @@ def resolve_workspace_id(instance: RuntimeInstance) -> str:
     handshake) get their OWN topic per workspace — same cwd as the Claude
     window, so the key is suffixed to keep the bindings apart."""
     base = instance.cwd or instance.key
-    for agent in ("codex", "opencode"):
-        if instance.display_name.endswith(f"-{agent}") or instance.instance_name.endswith(f"-{agent}"):
-            return f"{base}#{agent}"
-    return base
+    agent = instance_agent(instance)
+    return base if agent == "claude" else f"{base}#{agent}"
 
 
 def _topic_lock(application: Application, workspace_id: str) -> asyncio.Lock:

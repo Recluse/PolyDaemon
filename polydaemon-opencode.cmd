@@ -12,5 +12,5 @@ if not exist "%REPO%\clients\polydaemon-windows.ps1" (
   echo polydaemon: set TG_BRIDGE_REPO to the checkout or configure ~/.config/polydaemon/windows-repo-path 1>&2
   exit /b 1
 )
-pwsh.exe -NoProfile -File "%REPO%\clients\polydaemon-windows.ps1" -Agent claude -Workspace "%~dp0." %*
+pwsh.exe -NoProfile -File "%REPO%\clients\polydaemon-windows.ps1" -Agent opencode -Workspace "%~dp0." %*
 exit /b %errorlevel%

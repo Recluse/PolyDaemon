@@ -43,6 +43,8 @@ Launchers use `polydaemon-<agent>`. Some integration IDs retain the former
 - **Codex windows** — experimental: [docs/codex.md](docs/codex.md).
 - **OpenCode V2 windows** — native session/tool/permission hooks:
   [docs/opencode.md](docs/opencode.md). V1 plugins are not supported.
+- **MiMo Code windows** — experimental native server/TUI plugins:
+  [docs/mimo.md](docs/mimo.md).
 
 ## How it fits together
 

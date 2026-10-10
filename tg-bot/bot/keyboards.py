@@ -117,31 +117,42 @@ def build_launch_keyboard(
     workspaces: list[tuple[str, str]],
     tabs: list[str] | None = None,
     current: str = "",
+    kind: str = "claude",
+    new_session: bool = False,
 ) -> InlineKeyboardMarkup:
     """Picker of registered-but-offline workspaces to start. `workspaces` is
     [(title, cwd)] from launcher.list_launchable; the callback carries a short
-    token (see cb_token), resolved back to the title on the way in.
+    token of the cwd (see cb_token), plus coding agent and session mode.
 
     `tabs` are machine labels — one row of them across the top, the open one
     marked. Only drawn when there are at least two: a single machine needs no
     tab to choose it, and a lone tab button would just be a label pretending to
     be a control."""
+    from bot.launcher import AGENT_LABELS
+    def view(agent=kind, fresh=new_session, machine=current):
+        return f"launch:view:{agent}:{int(fresh)}:{cb_token(machine) if machine else '-'}"
     rows: list[list[InlineKeyboardButton]] = []
     if tabs and len(tabs) > 1:
         rows.append([
             InlineKeyboardButton(
                 text=f"▸ {label}" if label == current else label,
-                callback_data=f"launch:tab:{cb_token(label)}",
+                callback_data=view(machine=label),
             )
             for label in tabs
         ])
+    rows.append([InlineKeyboardButton(text=("▸ " if agent == kind else "") + label,
+                                    callback_data=view(agent=agent))
+                 for agent, label in AGENT_LABELS.items()])
+    rows.append([InlineKeyboardButton(text=("▸ " if fresh == new_session else "") + t(key),
+                                    callback_data=view(fresh=fresh))
+                 for fresh, key in ((False, "kb.launch_resume"), (True, "kb.launch_new"))])
     rows += [
-        [InlineKeyboardButton(text=f"🚀 {title}", callback_data=f"launch:go:{cb_token(title)}")]
-        for title, _cwd in workspaces
+        [InlineKeyboardButton(text=f"🚀 {title}", callback_data=f"launch:go:{kind}:{int(new_session)}:{cb_token(cwd)}")]
+        for title, cwd in workspaces
     ]
     # Refresh stays on the open tab, or the picker would jump machines under the
     # person's finger.
-    refresh = "launch:list" if not current else f"launch:tab:{cb_token(current)}"
+    refresh = view()
     rows.append([InlineKeyboardButton(text=t("kb.refresh"), callback_data=refresh)])
     return InlineKeyboardMarkup(rows)
 
@@ -302,17 +313,17 @@ if __name__ == "__main__":  # self-check: python3 tg-bot/bot/keyboards.py
     ws = [("api-gateway", "/w/api-gateway"), ("webapp", "/w/webapp")]
     rows = [[(b.text, b.callback_data) for b in row]
             for row in build_launch_keyboard(ws, ["Mac", "Windows"], "Mac").inline_keyboard]
-    assert rows[0] == [("▸ Mac", f"launch:tab:{cb_token('Mac')}"),
-                       ("Windows", f"launch:tab:{cb_token('Windows')}")], rows[0]
-    assert len(rows) == 4, rows
-    assert rows[-1][0][1] == f"launch:tab:{cb_token('Mac')}", "refresh stays on the open tab"
+    assert rows[0] == [("▸ Mac", f"launch:view:claude:0:{cb_token('Mac')}"),
+                       ("Windows", f"launch:view:claude:0:{cb_token('Windows')}")], rows[0]
+    assert len(rows) == 6, rows
+    assert rows[-1][0][1] == f"launch:view:claude:0:{cb_token('Mac')}", "refresh stays on the open tab"
 
     one = build_launch_keyboard(ws, [""], "").inline_keyboard
-    assert len(one) == 3, "a single machine needs no tab row"
-    assert one[-1][0].callback_data == "launch:list"
+    assert len(one) == 5, "a single machine needs no tab row"
+    assert one[-1][0].callback_data == "launch:view:claude:0:-"
 
     empty = build_launch_keyboard([], ["Mac", "Windows"], "Windows").inline_keyboard
-    assert len(empty) == 2 and empty[0][1].text == "▸ Windows", \
+    assert len(empty) == 4 and empty[0][1].text == "▸ Windows", \
         "an empty machine keeps its tabs, or the other one becomes a dead end"
 
     # Telegram rejects the WHOLE sendMessage over ONE oversized callback_data.
@@ -321,4 +332,3 @@ if __name__ == "__main__":  # self-check: python3 tg-bot/bot/keyboards.py
             assert len(data.encode()) <= 64, (data, len(data.encode()))
 
     print("keyboards self-check OK")
-

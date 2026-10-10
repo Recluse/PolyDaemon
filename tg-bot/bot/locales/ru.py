@@ -19,6 +19,8 @@ STRINGS: dict[str, str] = {
     "kb.placeholder_main": "Напиши сообщение или выбери окно через {windows}",
     "kb.placeholder_quick_switch": "Тапни окно — переключусь, {status} или {back}",
     "kb.refresh": "🔄 Обновить",
+    "kb.launch_resume": "Продолжить",
+    "kb.launch_new": "Новая сессия",
     "kb.save": "💾 Сохраняемся",
     "kb.settings": "⚙️ Настройки",
     "kb.status": "📈 Статус",

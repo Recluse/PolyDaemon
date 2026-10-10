@@ -19,6 +19,7 @@ from bot.common import (
 from bot.i18n import t
 from bot.inject import deliver_slash_command
 from bot.launcher import launch_workspace
+from bot.topics import instance_agent
 
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,7 @@ async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     #    more than one machine. The cwd was captured above, before /exit, while the
     #    window was still listed.
     try:
-        await launch_workspace(context, name, inst.cwd)
+        await launch_workspace(context, name, inst.cwd, instance_agent(inst))
     except Exception as exc:
         logger.exception("restart: launch failed name=%r", name)
         try:
@@ -374,7 +375,7 @@ async def _restart_all_run(context: ContextTypes.DEFAULT_TYPE, chat_id: int, mes
             failed.append(f"{inst.display_name} ({t('exit.still_open')})")
             continue
         try:
-            await launch_workspace(context, inst.key, inst.cwd)
+            await launch_workspace(context, inst.key, inst.cwd, instance_agent(inst))
             done.append(inst.display_name)
         except Exception as exc:
             logger.exception("restart all: launch failed name=%r", inst.key)

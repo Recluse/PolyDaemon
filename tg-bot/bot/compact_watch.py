@@ -175,7 +175,7 @@ async def compact_watch_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     for inst in instances:
         # Codex has no context reader yet; older plugins report Claude's transcript.
-        if resolve_workspace_id(inst).endswith(("#codex", "#opencode")):
+        if resolve_workspace_id(inst).endswith(("#codex", "#opencode", "#mimo")):
             continue
         key = inst.key
         prev = state.get(key)

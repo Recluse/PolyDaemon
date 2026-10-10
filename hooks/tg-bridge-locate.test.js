@@ -22,3 +22,6 @@ const opencode = { ...owned, workspace_name: "sample-project-opencode" };
 assert.equal(matchRow([opencode, claude, project], project.cwd, { ...ctx, agent: "opencode" }), opencode);
 assert.equal(matchRow([opencode, claude], project.cwd, { ...ctx, agent: "claude" }), claude);
 console.log("plugin routing self-check OK");
+const mimo = { ...owned, workspace_name: "sample-project-mimo" };
+assert.equal(matchRow([opencode, mimo, claude], project.cwd, { ...ctx, agent: "mimo" }), mimo);
+assert.equal(matchRow([mimo, claude], project.cwd, { ...ctx, agent: "claude" }), claude);

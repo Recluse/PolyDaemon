@@ -39,6 +39,11 @@ test('Codex handshake updates headers, RPC sender and topic key; Claude stays un
     expect(ensureWorkspaceHeader('test')).toBe('**infra-win-opencode →**\ntest')
     await rpc.listWindowsRemote()
     expect(requests.at(-1)!.body.from).toBe('infra-win-opencode')
+    setNameOverride('infra-win-mimo')
+    expect(config.workspaceBindingKey()).toBe(`${config.canonicalCwd(process.cwd())}#mimo`)
+    expect(ensureWorkspaceHeader('test')).toBe('**infra-win-mimo →**\ntest')
+    await rpc.listWindowsRemote()
+    expect(requests.at(-1)!.body.from).toBe('infra-win-mimo')
   } finally {
     globalThis.fetch = oldFetch
     setNameOverride(oldName)

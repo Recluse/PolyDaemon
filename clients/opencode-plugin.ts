@@ -7,17 +7,12 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { formatCodexInbound } from '../channel-plugin/src/codex-inbound.ts'
 import { ProjectMemory } from './opencode-memory-rpc.ts'
 import { registerProjectMemory } from './opencode-memory-reader.ts'
+import { cleanAutoReply, parsePseudoReply } from './opencode-auto-reply.ts'
+import { guardInput } from './bridge-tool-input.ts'
+export { guardInput } from './bridge-tool-input.ts'
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)))
 const { findOwnPlugin } = createRequire(import.meta.url)('../hooks/tg-bridge-locate.js')
-
-export function guardInput(tool: string, input: any, cwd: string) {
-  const names: Record<string, string> = { shell: 'Bash', bash: 'Bash', read: 'Read', edit: 'Edit', write: 'Write', glob: 'Glob', grep: 'Grep' }
-  return { cwd, tool_name: names[tool] || (tool.includes('_') ? `mcp__opencode__${tool}` : tool), tool_input: {
-    ...input, file_path: input?.filePath ?? input?.file_path,
-    path: input?.path, cwd: input?.cwd ?? input?.workdir,
-  } }
-}
 
 export default {
   id: 'tg-bridge',
@@ -77,7 +72,8 @@ export default {
     }
     async function approve(tool: string, input: unknown) {
       const result = await request('/approve-request', { cwd, tool_name: tool, tool_input: input, sensitive: true }, 86460000)
-      if (result.decision !== 'allow') throw new Error(result.reason || 'Not approved by owner')
+      if (result.decision !== 'allow' && result.decision !== 'deny') throw new Error('PolyDaemon: no approval decision received')
+      return result
     }
     // Admission precedes the executable tool snapshot; don't prime a model with an empty MCP catalog.
     await ctx.session.hook('prompt', async (event: any) => {
@@ -106,7 +102,8 @@ export default {
       if (classify.status !== 0) throw new Error('Bridge guard failed; action not executed')
       const classified = JSON.parse(classify.stdout)
       if (classified.sensitive) {
-        await approve(event.tool, event.input)
+        const decision = await approve(event.tool, event.input)
+        if (decision.decision === 'deny') throw new Error(decision.reason || 'Not approved by owner')
       }
       if (event.id && (classified.sensitive || classified.bridgeRead)) approved.add(`${event.sessionID}:${event.id}`)
       const detail = /^(shell|bash)$/.test(event.tool)
@@ -123,15 +120,18 @@ export default {
         event.effect = 'allow'; return
       }
       try {
-        await approve(event.action, { resources: event.resources, ...event.metadata })
-        event.effect = 'allow'
+        const decision = await approve(event.action, { resources: event.resources, ...event.metadata })
+        event.effect = decision.decision
       } catch (error) {
-        event.effect = 'deny'; event.message = String(error)
+        // Keep native ask as-is: unavailable Telegram is not a human decision.
+        event.message = `PolyDaemon: approval transport failed; use the native prompt. ${String(error)}`
+        console.error(event.message)
+        await request('/notify', { kind: 'api_error', message: event.message }).catch(() => {})
       }
     })
     await ctx.session.hook('context', (event: any) => {
       if (event.sessionID !== sessionID) return
-      event.system.push({ type: 'text', text: 'Telegram prompts include source=telegram metadata. Acknowledge with PolyDaemon react, send the final answer with PolyDaemon reply to its chat_id. Push/deploy and file access outside this workspace require explicit owner permission. Never approve actions on behalf of the owner.' })
+      event.system.push({ type: 'text', text: 'Telegram prompts include source=telegram metadata. For every Telegram prompt, call the native MCP tool PolyDaemon_reply for the final answer: arguments must be {"chat_id":"<metadata chat_id>","text":"<answer>"}, with optional reply_to set to the incoming message_id. Do not print a JSON tool call, XML tags, <|im_end|>, or the tool name as text. If the PolyDaemon tool is unavailable, say so in normal prose instead of pretending to call it. Acknowledge with PolyDaemon_react when useful. Push/deploy and file access outside this workspace require explicit owner permission. Never approve actions on behalf of the owner.' })
     })
     await ctx.session.hook('retry', async (event: any) => {
       if (event.sessionID !== sessionID) return
@@ -160,8 +160,15 @@ export default {
         }
         const replied = answers.some((m: any) => m.content.some((p: any) =>
           p.type === 'tool' && /(?:^|_)(?:tg.?bridge|polydaemon).*reply$/i.test(p.name) && p.state?.status === 'completed'))
-        const text = final?.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n').trim()
-        if (!replied && text) await request('/auto-reply', { text, chat_id: prompt.meta.chat_id, prompt_id: prompt.id })
+        const rawText = final?.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n') ?? ''
+        const pseudo = parsePseudoReply(rawText)
+        const text = cleanAutoReply(rawText)
+        if (!replied && pseudo) {
+          await request('/auto-reply', { text: pseudo.text, chat_id: prompt.meta.chat_id,
+            reply_to: pseudo.reply_to ?? prompt.meta.message_id, prompt_id: prompt.id })
+        } else if (!replied && text) {
+          await request('/auto-reply', { text, chat_id: prompt.meta.chat_id, prompt_id: prompt.id })
+        }
       } catch (error) { if (!signal.aborted) console.error('PolyDaemon: final reply failed', error) }
       finally {
         waiting = false

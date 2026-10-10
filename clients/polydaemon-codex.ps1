@@ -1,9 +1,17 @@
 param(
     [Parameter(Mandatory)][string]$Workspace,
     [switch]$Check,
+    [switch]$Plan,
     [Parameter(ValueFromRemainingArguments)][string[]]$CodexArgs
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'polydaemon-session-args.ps1')
+$selection = Get-PolyDaemonSessionArgs -Arguments $CodexArgs
+$CodexArgs = @($selection.Arguments | Where-Object { $null -ne $_ })
+if ($Plan) {
+    [PSCustomObject]@{ fresh=$selection.New; arguments=@('--remote','ws://127.0.0.1:3210','--cd',$Workspace) + $CodexArgs } | ConvertTo-Json -Depth 4
+    exit 0
+}
 $codexCommand = (Get-Command codex.cmd -ErrorAction Stop).Source
 $management = @('mcp','app-server','doctor','login','logout','features','plugin','completion','update','exec','review','queue','sandbox','debug')
 if ($CodexArgs.Count -gt 0 -and ($management -contains $CodexArgs[0] -or $CodexArgs[0] -in @('--help','-h','--version','-V'))) {

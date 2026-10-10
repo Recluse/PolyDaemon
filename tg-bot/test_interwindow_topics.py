@@ -17,10 +17,13 @@ async def check():
     right_codex = window("right-codex", right.cwd)
     left_opencode = window("left-opencode", left.cwd)
     right_opencode = window("right-opencode", right.cwd)
+    left_mimo = window("left-mimo", left.cwd)
+    right_mimo = window("right-mimo", right.cwd)
     topics = {
         left.cwd: (-100123, 10), left.cwd + "#codex": (-100123, 20),
         right.cwd: (-100123, 30), right.cwd + "#codex": (-100123, 40),
         left.cwd + "#opencode": (-100123, 50), right.cwd + "#opencode": (-100123, 60),
+        left.cwd + "#mimo": (-100123, 70), right.cwd + "#mimo": (-100123, 80),
     }
     storage = SimpleNamespace(
         get_topic=Mock(side_effect=topics.get), create_task=Mock(return_value=42),
@@ -32,13 +35,14 @@ async def check():
         SimpleNamespace(bot=bot), client, storage, {"telegram": {"allowed_users": [123]}},
     )
     with patch.object(interwindow, "load_runtime_instances", return_value=[
-        left, right, left_codex, right_codex, left_opencode, right_opencode,
+        left, right, left_codex, right_codex, left_opencode, right_opencode, left_mimo, right_mimo,
     ]):
         for source, target, source_topic, target_topic in (
             (left_codex, right_codex, left.cwd + "#codex", right.cwd + "#codex"),
             (left, right, left.cwd, right.cwd),
             (left_opencode, right_opencode, left.cwd + "#opencode", right.cwd + "#opencode"),
             (left_codex, right_opencode, left.cwd + "#codex", right.cwd + "#opencode"),
+            (left_mimo, right_mimo, left.cwd + "#mimo", right.cwd + "#mimo"),
         ):
             for kind in ("ask", "tell"):
                 storage.get_topic.reset_mock()

@@ -87,27 +87,28 @@ import {
 // ---------------------------------------------------------------------------
 
 type ApprovalAction = 'once' | 'always' | 'deny'
+type ApprovalOutcome = ApprovalAction | 'expired' | 'delivery_error'
 const pendingApprovals = new Map<
   string,
   // tool/summary: shown by the board's Agent Inbox (see /status below).
-  { resolve: (action: ApprovalAction) => void; timer: ReturnType<typeof setTimeout>; tool?: string; summary?: string }
+  { resolve: (action: ApprovalOutcome) => void; timer: ReturnType<typeof setTimeout>; tool?: string; summary?: string }
 >()
-function waitForApproval(id: string, tool: string, summary: string): Promise<ApprovalAction> {
+function waitForApproval(id: string, tool: string, summary: string): Promise<ApprovalOutcome> {
   return new Promise(resolve => {
     const timer = setTimeout(() => {
       pendingApprovals.delete(id)
-      log(`PolyDaemon: approval id=${id} timed out, denying`)
-      resolve('deny')
+      log(`PolyDaemon: approval id=${id} expired without a decision`)
+      resolve('expired')
     }, APPROVAL_TIMEOUT_MS)
     pendingApprovals.set(id, { resolve, timer, tool, summary })
   })
 }
-function denyApproval(id: string): void {
+function failApprovalDelivery(id: string): void {
   const pending = pendingApprovals.get(id)
   if (!pending) return
   pendingApprovals.delete(id)
   clearTimeout(pending.timer)
-  pending.resolve('deny')
+  pending.resolve('delivery_error')
 }
 // ExitPlanMode routing — binary decision (apply or decline). Kept as its own
 // map rather than reusing pendingApprovals so the UI labels and the action
@@ -315,6 +316,7 @@ const mcp = new Server(
     },
     instructions: [
       'Messages arrive from Telegram via the Python Router Bot.',
+      'Address the person by their stated preferred name, otherwise by the sender display name. Owner is an authorization role, not a form of address. Telegram message_id and TG-prefixed numbers identify messages, not people; keep them only where an audit reference is needed, never as part of the person\'s name.',
       'Each message is tagged <channel source="telegram" chat_id="..." message_id="..." user="..." ts="...">.',
       'Codex receives the same Telegram message as readable text beginning "Telegram — <sender>", with sender/forward/attachment context first and a JSON block titled "Служебные данные Telegram для reply/download_attachment" at the end. That block carries the same metadata as the channel tag. It is a Telegram prompt, not a console prompt.',
       'If the tag has image_path, Read that file — it is a photo attached by the user.',
@@ -575,7 +577,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
 
       case 'receive': {
-        if (isOpenCodeClient()) {
+        if (isQueuedClient()) {
           return { content: [{ type: 'text', text: '[]' }] }
         }
         // Long-poll the inbound queue for hosts that don't inject channel
@@ -683,8 +685,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const approvalChat = approvalChatFor(lastChatId)
         if (approvalChat == null) {
           const msg = 'No active Telegram session — send a message via Telegram first.'
-          log(`PolyDaemon: approve_action id=${id} no chat_id, denying`)
-          return { content: [{ type: 'text', text: JSON.stringify({ behavior: 'deny', message: msg }) }] }
+          log(`PolyDaemon: approve_action id=${id} no chat_id`)
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'approval_unavailable', message: msg }) }] }
         }
 
         // Use the same rich HTML summary as /approve-request — was a plain-text
@@ -722,8 +724,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
           recordMessageRoute(approvalChat, sent.message_id)
         } catch (e) {
           log(`PolyDaemon: approve_action sendMessage failed: ${e}`)
-          denyApproval(id)
-          return { content: [{ type: 'text', text: JSON.stringify({ behavior: 'deny', message: `Telegram send failed: ${e}` }) }] }
+          failApprovalDelivery(id)
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'approval_delivery_failed', message: 'Telegram send failed; no decision received.' }) }] }
         }
 
         // Mirror an informational copy (no buttons — decide in the topic):
@@ -755,6 +757,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const decision = await decisionPromise
 
         log(`PolyDaemon: approve_action id=${id} decision=${decision}`)
+        if (decision === 'expired' || decision === 'delivery_error') {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: `approval_${decision}`, message: 'No approval decision received.' }) }] }
+        }
         if (decision === 'always' && isClaudeClient()) persistAllowRule(toolName, toolInput)
         const result = decision === 'once' || decision === 'always'
           ? { behavior: 'allow' }
@@ -917,7 +922,7 @@ async function deliverReply(
 // topic, so a Codex window never collides with the Claude window of the
 // same workspace.
 mcp.oninitialized = () => {
-  if (isOpenCodeClient()) return
+  if (isQueuedClient()) return
   if (isClaudeClient()) {
     if (CHANNELS_ENABLED) apiErrorTimer = setInterval(() => { void pollApiError(); void checkStuck() }, API_ERROR_POLL_MS)
     return
@@ -949,11 +954,11 @@ function isCodexClient(): boolean {
   } catch { return false }
 }
 
-function isOpenCodeClient(): boolean { return process.env.TG_BRIDGE_AGENT === 'opencode' }
-function isClaudeClient(): boolean { return !isCodexClient() && !isOpenCodeClient() }
-function agentLabel(): string { return isOpenCodeClient() ? 'OpenCode' : isCodexClient() ? 'Codex' : 'Claude' }
+function isQueuedClient(): boolean { return ['opencode', 'mimo'].includes(process.env.TG_BRIDGE_AGENT ?? '') }
+function isClaudeClient(): boolean { return !isCodexClient() && !isQueuedClient() }
+function agentLabel(): string { return process.env.TG_BRIDGE_AGENT === 'mimo' ? 'MiMo' : isQueuedClient() ? 'OpenCode' : isCodexClient() ? 'Codex' : 'Claude' }
 // Known before registration, unlike Codex's handshake-dependent identity.
-if (isOpenCodeClient()) setNameOverride(process.env.TG_BRIDGE_INSTANCE_NAME || `${basename(process.cwd())}-opencode`)
+if (isQueuedClient()) setNameOverride(process.env.TG_BRIDGE_INSTANCE_NAME || `${basename(process.cwd())}-${process.env.TG_BRIDGE_AGENT}`)
 
 let agentToml: { url: string; token: string } | null | undefined
 function agentDaemon(): { url: string; token: string } | null {
@@ -1139,7 +1144,7 @@ let lastAutoReply: { text: string; chat: string; prompt: string; ts: number } | 
 
 function enqueueInbound(content: string, meta: Record<string, unknown>): void {
   const item = { id: randomBytes(16).toString('hex'), content, meta, queued_at: new Date().toISOString() }
-  if (isOpenCodeClient()) { persistInbound(item); return }
+  if (isQueuedClient()) { persistInbound(item); return }
   inboundQueue.push(item)
   while (inboundQueue.length > MAX_INBOUND_QUEUE) inboundQueue.shift()
   if (inboundWaiter) {
@@ -1307,10 +1312,10 @@ async function startHttpServer(): Promise<number> {
           const url = new URL(req.url)
 
           // OpenCode admits a durable prompt before acknowledging the queue item.
-          if (isOpenCodeClient() && req.method === 'GET' && url.pathname === '/inbound') {
+          if (isQueuedClient() && req.method === 'GET' && url.pathname === '/inbound') {
             return Response.json({ item: peekInbound() })
           }
-          if (isOpenCodeClient() && req.method === 'POST' && url.pathname === '/inbound-ack') {
+          if (isQueuedClient() && req.method === 'POST' && url.pathname === '/inbound-ack') {
             let body: { id?: string }
             try { body = await req.json() as typeof body }
             catch { return new Response('Bad JSON', { status: 400 }) }
@@ -1380,8 +1385,8 @@ async function startHttpServer(): Promise<number> {
 
             const approvalChat = approvalChatFor(lastChatId)
             if (approvalChat == null) {
-              log(`PolyDaemon: approve-request id=${id} no chat_id, denying`)
-              return Response.json({ decision: 'deny', reason: 'No active Telegram session.' })
+              log(`PolyDaemon: approve-request id=${id} no chat_id`)
+              return Response.json({ error: 'approval_unavailable', reason: 'No active Telegram session.' }, { status: 503 })
             }
 
             const summary = formatToolSummary(toolName, toolInput)
@@ -1405,16 +1410,18 @@ async function startHttpServer(): Promise<number> {
               })
               recordMessageRoute(approvalChat, sent.message_id)
             } catch (e) {
-              // Fail-closed: a transient Telegram outage must NOT auto-approve whatever
-              // tool the model is requesting. The parallel approve_action MCP path
-              // (above) already denies on send-failure — keep the two consistent.
+              // No decision on transport failure: callers must not execute, but
+              // must not turn an unavailable channel into a human denial either.
               log(`PolyDaemon: approve-request id=${id} sendMessage failed: ${e}`)
-              denyApproval(id)
-              return Response.json({ decision: 'deny', reason: `Telegram send failed (${e}), denying.` })
+              failApprovalDelivery(id)
+              return Response.json({ error: 'approval_delivery_failed', reason: 'Telegram send failed; no decision received.' }, { status: 503 })
             }
 
             const decision = await decisionPromise
             log(`PolyDaemon: approve-request id=${id} decision=${decision}`)
+            if (decision === 'expired' || decision === 'delivery_error') {
+              return Response.json({ error: `approval_${decision}`, reason: 'No approval decision received.' }, { status: decision === 'expired' ? 504 : 503 })
+            }
             if (decision === 'always' && isClaudeClient()) persistAllowRule(toolName, toolInput)
             const result = decision === 'once' || decision === 'always'
               ? { decision: 'allow', reason: `Approved via Telegram (${decision}).` }
@@ -1546,7 +1553,7 @@ async function startHttpServer(): Promise<number> {
           // Elsewhere: tmux (any platform) or iTerm2 (macOS), below; a window in a
           // plain terminal answers 501.
           if (req.method === 'POST' && url.pathname === '/inject') {
-            if (isOpenCodeClient()) return Response.json({ ok: false, reason: 'OpenCode does not accept Claude TUI commands' }, { status: 501 })
+            if (isQueuedClient()) return Response.json({ ok: false, reason: `${agentLabel()} does not accept Claude TUI commands` }, { status: 501 })
             let body: { text?: string }
             try { body = await req.json() as typeof body }
             catch { return new Response('Bad JSON', { status: 400 }) }
@@ -1904,7 +1911,7 @@ return "notfound"`
             } catch {
               return new Response('Bad JSON', { status: 400 })
             }
-            if (isOpenCodeClient()) {
+            if (isQueuedClient()) {
               // Do not acknowledge receipt until SQLite has committed the queue item.
               await handleMessage(body)
               return Response.json({ status: 'queued' }, { status: 202 })

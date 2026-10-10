@@ -83,7 +83,7 @@ class ChannelPluginClient:
             raise PermissionError(f"Auth failed for instance '{instance_name}' — check auth_token.")
         resp.raise_for_status()
 
-    async def post_launch(self, agent_url: str, token: str, name: str, cwd: str = "") -> None:
+    async def post_launch(self, agent_url: str, token: str, name: str, cwd: str = "", agent: str = "claude", new_session: bool = False) -> None:
         """POST /launch to a machine's launch-agent (clients/launch-agent.ts).
 
         Used when the bot runs apart from the workspaces (e.g. on the bot host while
@@ -93,9 +93,18 @@ class ChannelPluginClient:
         surface it to the user. `cwd`, when known, lets the agent open that exact
         folder instead of searching its workspace root for `name`; an older agent
         ignores the extra field and searches as before."""
+        if agent not in ("claude", "codex", "opencode", "mimo") or not isinstance(new_session, bool):
+            raise ValueError("invalid launch agent or session mode")
+        # Old launch agents silently ignore new fields and would start Claude.
+        if agent != "claude" or new_session:
+            health = await self._get_client().get(f"{agent_url.rstrip('/')}/health", timeout=self._post_timeout)
+            health.raise_for_status()
+            capabilities = health.json()
+            if agent not in capabilities.get("agents", []) or (new_session and capabilities.get("new_session") is not True):
+                raise RuntimeError("Update this machine's PolyDaemon launch-agent before selecting an agent or new session")
         resp = await self._get_client().post(
             f"{agent_url.rstrip('/')}/launch",
-            json={"name": name, "cwd": cwd} if cwd else {"name": name},
+            json={"name": name, "cwd": cwd, "agent": agent, "new_session": new_session},
             headers={"Authorization": f"Bearer {token}"},
             timeout=self._post_timeout,
         )

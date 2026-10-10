@@ -56,7 +56,7 @@ function matchRow(rows, cwd, {
     if (r.parent_pid != null && Number(r.parent_pid) <= 1) return false;
     if (!r.cwd || path.dirname(r.cwd) === r.cwd) return false;
     const name = String(r.instance_name || r.workspace_name || "");
-    const kind = /-opencode$/i.test(name) ? "opencode" : /-codex$/i.test(name) ? "codex" : "claude";
+    const kind = /-(opencode|codex|mimo)$/i.exec(name)?.[1].toLowerCase() || "claude";
     return agent === kind;
   });
   // The launcher gives each window a TG_WINDOW_UID that its hooks inherit and its

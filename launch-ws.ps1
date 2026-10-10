@@ -1,14 +1,13 @@
 <#
-launch-ws.ps1 — open a workspace's Claude (polydaemon-claude.cmd) in a VISIBLE console window.
+launch-ws.ps1 — open a workspace's selected PolyDaemon agent in a visible console.
 
 The instance connects to the tg-bridge by --name (= its folder), registers, and the
 Python bot auto-creates/binds its forum topic (topic-bindings.json keyed by cwd) — so
 the whole conversation for that workspace lives in its own Telegram topic.
 
 Usage:  launch-ws.ps1 <workspace-name>     # e.g. launch-ws.ps1 my-project
-        launch-ws.ps1 <name> -Dir <folder>  # open that folder (what the bot sends);
-                                            # falls back to the name search if it
-                                            # holds no polydaemon-claude.cmd
+        launch-ws.ps1 <name> -Dir <folder> -Agent codex -NewSession
+                                            # exact folder; missing launcher fails
         launch-ws.ps1 -List                # list launchable workspaces
 
 Workspace root: -WorkspaceRoot, else $env:TG_WS_ROOT, else <system drive>\Work.
@@ -17,6 +16,9 @@ param(
   [Parameter(Position = 0)][string]$Name,
   [switch]$List,
   [string]$Dir,            # the workspace folder itself, when the caller knows it
+  [ValidateSet('claude','codex','opencode','mimo')][string]$Agent = 'claude',
+  [switch]$NewSession,
+  [switch]$Check,          # read-only plan: no process, settings write or keypress
   [int]$Enter = 2,         # presses to send into the new window once the TUI is up
   [int]$DelaySec = 0,      # extra wait before the first screen read. Was 10: a fixed
                            # sleep before even LOOKING, which is most of why a
@@ -52,26 +54,41 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$launcherNames = @("polydaemon-$Agent.cmd")
+if ($Agent -eq 'claude') { $launcherNames += 'tg-claude.cmd' }
+function Has-Launcher([string]$Folder) {
+  foreach ($launcher in $launcherNames) {
+    if (Test-Path -LiteralPath (Join-Path $Folder $launcher)) { return $true }
+  }
+  return $false
+}
+function Physical-Path([string]$Folder) {
+  $item = Get-Item -LiteralPath $Folder -ErrorAction Stop
+  for ($i=0; $i -lt 8 -and $item.Target; $i++) {
+    $item = Get-Item -LiteralPath @($item.Target)[0] -ErrorAction Stop
+  }
+  return $item.FullName.TrimEnd('\','/').Replace('/','\')
+}
 
 # Discover every folder under $WorkspaceRoot (depth<=4) that has a polydaemon-claude.cmd.
 # NB: -Recurse does not descend into junctions/symlinks — probe top-level
 # reparse points explicitly (a junction workspace is a named alias of another
 # one: window name = folder basename).
 function Get-Workspaces {
-  $found = Get-ChildItem -Path $WorkspaceRoot -Recurse -Depth 4 -Include 'polydaemon-claude.cmd','tg-claude.cmd' -File -ErrorAction SilentlyContinue |
+  $found = Get-ChildItem -Path $WorkspaceRoot -Recurse -Depth 4 -Include $launcherNames -File -ErrorAction SilentlyContinue |
     ForEach-Object { [pscustomobject]@{ Name = $_.Directory.Name; Path = $_.Directory.FullName } }
   $junctions = Get-ChildItem -Path $WorkspaceRoot -Directory -ErrorAction SilentlyContinue |
-    Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and ((Test-Path -LiteralPath (Join-Path $_.FullName 'polydaemon-claude.cmd')) -or (Test-Path -LiteralPath (Join-Path $_.FullName 'tg-claude.cmd'))) } |
+    Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Has-Launcher $_.FullName) } |
     ForEach-Object { [pscustomobject]@{ Name = $_.Name; Path = $_.FullName } }
-  @($found) + @($junctions) | Sort-Object Name -Unique
+  @($found) + @($junctions) | Sort-Object Path -Unique
 }
 
-# A known folder skips the scan entirely: faster, and no guessing between
-# same-named folders. Only trusted if it really is a workspace.
+# A known folder skips the scan entirely; missing launcher fails without fallback.
 # A plain string, not Join-Path: PowerShell 5.1's Join-Path throws on a drive that
 # is not mounted (an unplugged disk), which under ErrorAction Stop killed the
 # script before the name-search fallback below could run.
-if ($Dir -and -not $List -and ((Test-Path -LiteralPath "$Dir\polydaemon-claude.cmd") -or (Test-Path -LiteralPath "$Dir\tg-claude.cmd"))) {
+if ($Dir -and -not $List) {
+  if (!(Has-Launcher $Dir)) { throw "Exact workspace '$Dir' has no $Agent launcher" }
   $workspaces = @([pscustomobject]@{ Name = (Split-Path $Dir -Leaf); Path = (Resolve-Path -LiteralPath $Dir).Path })
   $Name = $workspaces[0].Name
 } else {
@@ -79,12 +96,12 @@ if ($Dir -and -not $List -and ((Test-Path -LiteralPath "$Dir\polydaemon-claude.c
 }
 
 if ($List -or -not $Name) {
-  Write-Output 'Launchable workspaces (have polydaemon-claude.cmd):'
+  Write-Output "Launchable workspaces for ${Agent}:"
   $workspaces | ForEach-Object { Write-Output ('  {0,-22} {1}' -f $_.Name, $_.Path) }
   return
 }
 
-$match = $workspaces | Where-Object { $_.Name -ieq $Name }
+$match = @($workspaces | Where-Object { $_.Name -ieq $Name })
 if (-not $match) {
   Write-Error "workspace '$Name' not found. Run with -List to see options."
   exit 1
@@ -94,9 +111,30 @@ if ($match.Count -gt 1) {
   exit 1
 }
 
-$dir = $match.Path
-$cmdPath = Join-Path $dir 'polydaemon-claude.cmd'
-if (-not (Test-Path -LiteralPath $cmdPath)) { $cmdPath = Join-Path $dir 'tg-claude.cmd' }
+$dir = $match[0].Path
+$cmdPath = Join-Path $dir "polydaemon-$Agent.cmd"
+if (-not (Test-Path -LiteralPath $cmdPath)) {
+  if ($Agent -ne 'claude' -or $NewSession) { throw 'Install the canonical launcher before requesting this agent/new session' }
+  $cmdPath = Join-Path $dir 'tg-claude.cmd'
+}
+# Match both workspace and agent; never stop an existing process or another agent.
+$registryPath = Join-Path $env:USERPROFILE '.tg-bridge-channel\instances.json'
+if (Test-Path -LiteralPath $registryPath) {
+  try { $registry = Get-Content -LiteralPath $registryPath -Raw | ConvertFrom-Json }
+  catch { throw 'Cannot inspect local bridge ownership registry; retry after its writer finishes' }
+  foreach ($entry in $registry.PSObject.Properties) {
+    $row = $entry.Value
+    $key = if ($row.instance_name) { $row.instance_name } else { $row.workspace_name }
+    $rowAgent = if ($key -match '-(codex|opencode|mimo)$') { $Matches[1] } else { 'claude' }
+    if ($rowAgent -ne $Agent -or !$row.cwd) { continue }
+    try { $same = (Physical-Path $row.cwd) -ieq (Physical-Path $dir) } catch { continue }
+    if ($same -and $row.pid -gt 1 -and $row.parent_pid -gt 1 -and
+        (Get-Process -Id $row.pid -ErrorAction SilentlyContinue) -and
+        (Get-Process -Id $row.parent_pid -ErrorAction SilentlyContinue)) {
+      throw "A live $Agent bridge window already owns '$dir'; use or close that window"
+    }
+  }
+}
 
 # Disable claude's auto-compact for THIS launched window. Without it, a full-session
 # resume gets auto-compacted immediately, defeating the "Resume full session" choice.
@@ -108,12 +146,15 @@ if (-not (Test-Path -LiteralPath $cmdPath)) { $cmdPath = Join-Path $dir 'tg-clau
 # that inline JSON braces/quotes would hit. Scoped to launched windows; global
 # settings untouched.
 $extraArgs = @()
-if (-not $KeepAutoCompact) {
+if ($NewSession) { $extraArgs += 'new' }
+if ($Agent -eq 'claude' -and -not $KeepAutoCompact) {
   $settingsPath = Join-Path $env:USERPROFILE '.tg-bridge-channel\launch-no-autocompact.json'
   try {
     $settingsDir = Split-Path $settingsPath -Parent
-    if (-not (Test-Path $settingsDir)) { New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null }
-    Set-Content -Path $settingsPath -Value '{"autoCompactEnabled":false}' -Encoding ascii -NoNewline
+    if (!$Check) {
+      if (-not (Test-Path $settingsDir)) { New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null }
+      Set-Content -Path $settingsPath -Value '{"autoCompactEnabled":false}' -Encoding ascii -NoNewline
+    }
     $extraArgs += @('--settings', $settingsPath)
   } catch { Write-Output "warn: could not write auto-compact settings: $_" }
 }
@@ -122,7 +163,12 @@ if (-not $KeepAutoCompact) {
 # and launched the wrong workspace). polydaemon-claude.cmd cd's to its own dir via %~dp0.
 # cmd /k keeps the window open after claude exits. Extra args after the .cmd path
 # flow into polydaemon-claude.cmd's %* and on to claude.
-$proc = Start-Process -FilePath 'cmd.exe' -ArgumentList (@('/k', "`"$cmdPath`"") + $extraArgs) `
+$commandLine = '"' + $cmdPath + '"' + (($extraArgs | ForEach-Object { ' "' + $_ + '"' }) -join '')
+if ($Check) {
+  [PSCustomObject]@{ agent=$Agent; workspace=$dir; launcher=$cmdPath; arguments=$extraArgs; nudge=($Agent -eq 'claude'); new_session=[bool]$NewSession; commandLine=$commandLine } | ConvertTo-Json -Depth 4
+  return
+}
+$proc = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/d /s /k "' + $commandLine + '"') `
   -WorkingDirectory $dir -WindowStyle Normal -PassThru
 Write-Output "launched '$($match.Name)' (pid $($proc.Id)) -> $cmdPath"
 
@@ -133,7 +179,7 @@ Write-Output "launched '$($match.Name)' (pid $($proc.Id)) -> $cmdPath"
 # this script from a hidden powershell), so the Enters either vanished or
 # landed in whatever app the user was typing in. WriteConsoleInput needs no
 # focus at all and can't leak keystrokes elsewhere.
-if ($Enter -gt 0 -or $ResumeChoice -ge 1) {
+if ($Agent -eq 'claude' -and ($Enter -gt 0 -or $ResumeChoice -ge 1)) {
   Add-Type -ErrorAction Stop @"
 using System; using System.Runtime.InteropServices; using System.Text;
 public class ConIn {

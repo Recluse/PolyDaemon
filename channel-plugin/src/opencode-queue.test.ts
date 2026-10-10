@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
-test('OpenCode queue survives process death, stays scoped, and only exact head ack removes items', async () => {
+for (const agent of ['opencode', 'mimo']) test(`${agent} queue survives process death, stays scoped, and only exact head ack removes items`, async () => {
   const home = mkdtempSync(join(process.cwd(), '.queue-test-'))
   let row: any
   const reservation = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('') })
@@ -18,13 +18,13 @@ test('OpenCode queue survives process death, stays scoped, and only exact head a
   } })
   let client: Client
   let transport: StdioClientTransport
-  async function connect(cwd = home, stateHome = home) {
+  async function connect(cwd = home, stateHome = home, kind = agent) {
     row = null
-    client = new Client({ name: 'opencode', version: 'test' })
+    client = new Client({ name: agent, version: 'test' })
     transport = new StdioClientTransport({ command: process.execPath,
       args: [resolve(import.meta.dir, '../server.ts')], cwd, stderr: 'pipe',
       env: { HOME: stateHome, PATH: process.env.PATH!, TG_BOT_TOKEN: 'test', TG_BRIDGE_AUTH_TOKEN: 'test',
-        TG_BRIDGE_FORCE_CHANNELS: '1', TG_BRIDGE_AGENT: 'opencode', TG_WINDOW_UID: 'test-queue',
+        TG_BRIDGE_FORCE_CHANNELS: '1', TG_BRIDGE_AGENT: kind, TG_WINDOW_UID: 'test-queue',
         TG_API_ROOT: fake.url.origin, TG_BRIDGE_BOT_URL: fake.url.origin, TG_BRIDGE_PORT: String(port) },
     })
     await client.connect(transport)
@@ -59,6 +59,11 @@ test('OpenCode queue survives process death, stays scoped, and only exact head a
     await transport.close()
     await connect()
     expect(await (await request('/inbound')).json()).toEqual(before)
+    await client.close()
+    await transport.close()
+    await connect(home, home, agent === 'mimo' ? 'opencode' : 'mimo')
+    expect((await (await request('/inbound')).json()).item).toBeNull()
+    expect((await request('/inbound-ack', { id: before.item.id })).status).toBe(409)
     await client.close()
     await transport.close()
     const sibling = join(home, 'sibling')

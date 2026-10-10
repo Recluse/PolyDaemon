@@ -51,9 +51,9 @@ class OpenCodeLauncherTest(unittest.TestCase):
                 args = ["--print-logs"]
                 with self.subTest(saved=saved, fresh=fresh, code=code):
                     result = subprocess.run(
-                        [str(copy), *args], cwd=root,
+                        [str(copy), *(["new"] if fresh else []), *args], cwd=root,
                         env={**env, "TEST_EXIT": str(code), "SAVED": str(int(saved)),
-                             "TG_OPENCODE_NEW": str(int(fresh))}, capture_output=True, text=True,
+                             "TG_OPENCODE_NEW": "0"}, capture_output=True, text=True,
                     )
                     self.assertEqual(result.returncode, code, result.stderr)
                     session = "ses_saved" if saved and not fresh else "ses_new"

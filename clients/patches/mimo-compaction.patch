@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/session/compaction.ts b/packages/cli/src/session/compaction.ts
+--- a/packages/cli/src/session/compaction.ts
++++ b/packages/cli/src/session/compaction.ts
+@@ -502,7 +502,8 @@
+         sessionID: input.sessionID,
+         tools: frozen?.tools ? SessionPrefixSnapshot.restoreTools(frozen.tools) : {},
+         activeTools: frozen?.tools?.map((item) => item.name),
+-        toolChoice: "auto",
++        // Summary processing rejects tool calls; keep the cached catalog but do not offer execution.
++        toolChoice: "none",
+         system: [],
+         prebuiltSystem: frozen?.system,
+         messages: [...modelMessages, summaryRequest],

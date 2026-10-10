@@ -41,7 +41,7 @@ from bot.keyboards import (
     build_status_refresh_keyboard,
     build_status_windows_keyboard,
 )
-from bot.launcher import build_launch_view, launch_workspace, list_launchable, resolve_agent_label
+from bot.launcher import AGENT_LABELS, build_launch_view, launch_workspace, list_launchable, resolve_agent_label
 from bot.permissions import (
     MODE_BYPASS,
     MODE_LABELS,
@@ -507,6 +507,21 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     action = parts[1] if len(parts) > 1 else ""
 
+    if action == "view" and len(parts) == 3:
+        fields = parts[2].split(":")
+        if len(fields) != 3 or fields[0] not in AGENT_LABELS or fields[1] not in ("0", "1"):
+            await query.answer(t("cb.launch_already_running"), show_alert=True)
+            return
+        kind, mode, machine = fields
+        label = resolve_agent_label(context, machine)
+        text, keyboard = build_launch_view(context, label, kind, mode == "1")
+        await query.answer()
+        try:
+            await query.edit_message_text(text, reply_markup=keyboard)
+        except Exception:
+            pass
+        return
+
     if action in ("list", "tab"):
         # "tab" carries which machine; "list" is the plain refresh from a
         # single-machine keyboard. Same view builder either way, so the tab row
@@ -522,15 +537,23 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if action == "go" and len(parts) >= 3:
         payload = parts[2]
+        kind, new_session = "claude", False
+        fields = payload.split(":")
+        modern = len(fields) == 3
+        if modern:
+            kind, mode, payload = fields
+            if kind not in AGENT_LABELS or mode not in ("0", "1"):
+                await query.answer(t("cb.launch_already_running"), show_alert=True)
+                return
+            new_session = mode == "1"
         # Re-verify against the CURRENT launchable set — the keyboard may be
         # stale (window started meanwhile, folder renamed, …). Prevents
         # double-launching an already-live workspace. Resolving the token here
         # doubles as that check: no match ⇒ not launchable any more.
-        workspaces = list_launchable(context)
-        hit = next(((title, cwd) for title, cwd in workspaces if cb_token(title) == payload), None)
-        if hit is None:
-            # Keyboards sent before the token change carry the raw title.
-            hit = next(((title, cwd) for title, cwd in workspaces if title == payload), None)
+        workspaces = list_launchable(context, kind=kind)
+        matches = [(title, cwd) for title, cwd in workspaces
+                   if (cb_token(cwd) == payload if modern else payload in (cb_token(title), title))]
+        hit = matches[0] if len(matches) == 1 else None
         if hit is None:
             await query.answer(t("cb.launch_already_running"), show_alert=True)
             return
@@ -538,11 +561,12 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # machines can hold a folder of the same name.
         name, cwd = hit
         try:
-            await launch_workspace(context, name, cwd)
+            await launch_workspace(context, name, cwd, kind, new_session)
         except Exception as exc:
             logger.exception("launch failed for %r", name)
             await query.answer(t("cb.launch_failed", error=exc), show_alert=True)
             return
+        name = f"{name} · {AGENT_LABELS[kind]}"
         await query.answer(t("cb.launch_starting_toast", name=name))
         try:
             await query.edit_message_text(

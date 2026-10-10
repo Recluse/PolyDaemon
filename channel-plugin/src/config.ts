@@ -118,6 +118,6 @@ export function setWorkspaceIdentity(name: string): void {
 // but their topics and inbound routing must remain distinct.
 export function workspaceBindingKey(): string {
   const cwd = canonicalCwd(process.cwd())
-  const agent = WORKSPACE_DISPLAY_NAME.match(/-(codex|opencode)$/)?.[1]
+  const agent = WORKSPACE_DISPLAY_NAME.match(/-(codex|opencode|mimo)$/)?.[1]
   return agent ? `${cwd}#${agent}` : cwd
 }

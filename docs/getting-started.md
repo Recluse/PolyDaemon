@@ -136,7 +136,9 @@ cd ~/code/my-project
 ./polydaemon-claude.sh
 ```
 
-On Windows, use `polydaemon-claude.cmd` from the repository root the same way.
+On Windows, install PowerShell 7 and use `polydaemon-claude.cmd` from the repository
+root the same way. The launcher needs this checkout via `TG_BRIDGE_REPO` or the
+saved repo-path; see [Windows launchers](windows-new-sessions.md).
 
 The launcher starts Claude with the Telegram channel, names the window after the
 folder, resumes that folder's last session when there is one, and runs in

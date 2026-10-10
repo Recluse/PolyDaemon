@@ -1,7 +1,25 @@
 # clients/
 
-PolyDaemon clients for machines running Claude Code, Codex or OpenCode.
+PolyDaemon clients for machines running Claude Code, Codex, OpenCode or MiMo.
 See [launcher names and compatibility](../docs/naming.md).
+
+All shell window launchers accept `new` as the first argument:
+
+```sh
+./polydaemon-claude.sh new
+./polydaemon-codex.sh new
+./polydaemon-opencode.sh new
+./polydaemon-mimo.sh new
+```
+
+This starts a clean session without deleting previous history. Without `new`,
+the launcher keeps its usual resume behavior. Do not combine `new` with a
+resume/session selector. Existing window ownership checks still apply: close
+the current window before replacing it; `new` does not stop another agent.
+
+Windows has root `polydaemon-{claude,codex,opencode,mimo}.cmd` launchers;
+first argument `new` starts a clean session. See
+[Windows new-session setup and native checks](../docs/windows-new-sessions.md).
 
 | File | What it is |
 |---|---|
@@ -26,5 +44,5 @@ for that physical folder; `TG_OPENCODE_NEW=1` starts a new one. It uses a native
 private server (`--standalone`) and refuses another active bridge window for
 the same workspace. `TG_BRIDGE_REPO` overrides the bridge checkout path.
 Providers and the existing OpenCode service are left untouched. Check the
-launcher without model calls with `python3 clients/test_tg_opencode.py`.
+launcher without model calls with `python3 clients/test_polydaemon_opencode.py`.
 See [OpenCode setup and verification](../docs/opencode.md).

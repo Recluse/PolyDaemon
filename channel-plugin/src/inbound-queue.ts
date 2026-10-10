@@ -5,7 +5,9 @@ import { STATE_DIR } from './config.ts'
 
 export type InboundItem = { id: string; content: string; meta: Record<string, unknown>; queued_at: string }
 let db: Database | null = null
-const workspace = realpathSync(process.cwd())
+const root = realpathSync(process.cwd())
+const agent = process.env.TG_BRIDGE_AGENT === 'mimo' ? 'mimo' : 'opencode'
+const workspace = `${root}#${agent}`
 
 function database(): Database {
   if (db) return db
@@ -18,6 +20,8 @@ function database(): Database {
     opened.exec(`CREATE TABLE IF NOT EXISTS inbound (
       id TEXT PRIMARY KEY, workspace TEXT NOT NULL, item TEXT NOT NULL
     ); CREATE INDEX IF NOT EXISTS inbound_workspace ON inbound(workspace)`)
+    // Existing unqualified queues belonged only to OpenCode. MiMo must not consume them.
+    if (agent === 'opencode') opened.query('UPDATE inbound SET workspace=? WHERE workspace=?').run(workspace, root)
   } catch (error) { opened.close(); throw error }
   db = opened
   return db

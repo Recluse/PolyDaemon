@@ -22,6 +22,8 @@ STRINGS: dict[str, str] = {
     "kb.placeholder_main": "Type a message or pick a window via {windows}",
     "kb.placeholder_quick_switch": "Tap a window to switch, {status} or {back}",
     "kb.refresh": "🔄 Refresh",
+    "kb.launch_resume": "Continue",
+    "kb.launch_new": "New session",
     "kb.save": "💾 Save it",
     "kb.settings": "⚙️ Settings",
     "kb.status": "📈 Status",

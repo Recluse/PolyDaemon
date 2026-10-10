@@ -45,11 +45,13 @@ it again — so it goes wherever both work.
 
 ## Windows
 
-- **Launcher:** `polydaemon-claude.cmd` from the repository root, copied into each
-  project. It resumes the folder's last conversation when there is one, and knows
-  how to find it for a folder that is a junction.
+- **Launchers:** `polydaemon-{claude,codex,opencode,mimo}.cmd` from the repository
+  root, copied into each project. They require PowerShell 7 and a configured
+  checkout path. `new` starts a fresh session; normal launches retain each
+  adapter's resume behavior. See [Windows launchers](windows-new-sessions.md).
 - **`/launch`:** `launch-ws.ps1`, run by the launch agent. It opens a console,
-  answers Claude's startup prompts by reading the screen, and minimises it
+  selects the requested agent and session mode, answers only Claude's startup
+  prompts by reading the screen, and minimises it
   (under Windows Terminal, which owns its windows, the minimise has no effect).
 - **Python** may be `py` or `python` rather than `python3`:
   `py hooks\install.py`.

@@ -119,17 +119,28 @@ plugin writes locally, so they need nothing from the bot host.
 
 ### The launchers
 
-Put `polydaemon-claude.sh` (macOS, Linux) or `polydaemon-claude.cmd` (Windows) in each project,
-as in getting-started. A window started this way registers with the bot within a
+Put the `polydaemon-<agent>.sh` (macOS, Linux) or `polydaemon-<agent>.cmd` (Windows)
+launchers in each project, for the agents installed on that machine. Windows
+uses PowerShell 7; see [Windows launchers](windows-new-sessions.md).
+A window started this way registers with the bot within a
 few seconds and shows up in `/window`.
 
 ## 3. Starting windows from Telegram — the launch agent
 
-`/launch` starts a window on a machine where none is running yet. No plugin
-exists there to ask, so each machine runs a tiny always-on **launch agent**
+`/launch` selects a machine, a coding agent (**Claude, Codex, OpenCode, MiMo**),
+and **Continue** or **New session**, then a project. The project list comes from
+known topic registrations; different agents' topics for one folder appear once.
+A live Codex window hides only Codex for that folder, not the other agents.
+New session passes `new` to the canonical launcher and preserves previous history.
+Restart preserves the window's coding agent and normal resume behavior.
+
+Each machine runs a tiny always-on **launch agent**
 (`clients/launch-agent.ts`) that the bot calls. It opens the project's folder in
 a terminal and answers Claude's startup prompts (on macOS, only in iTerm2;
-in Terminal.app you answer them yourself).
+in Terminal.app you answer them yourself). Other agents receive no simulated
+startup keystrokes. Explicit folders never fall back to a different workspace
+when a launcher is missing. Update the bot and launch agents together: the bot
+refuses agent/new-session selection on older agents that would ignore it.
 
 It is available on **Windows**, **macOS**, and **Linux with tmux** (the window
 starts in a detached tmux session) — see [platforms.md](platforms.md).

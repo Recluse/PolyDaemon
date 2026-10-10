@@ -1,5 +1,12 @@
 import { expect, test, mock } from 'bun:test'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { cleanAutoReply, parsePseudoReply } from './opencode-auto-reply.ts'
+
+test('OpenCode auto-reply drops pseudo tool JSON and model stop tokens', () => {
+  expect(cleanAutoReply('{"name":"PolyDaemon_reply","arguments":{"text":"hi"}}<|im_end|>')).toBe(null)
+  expect(parsePseudoReply('{"name":"PolyDaemon_reply","arguments":{"chat_id":"wrong","text":"hi"}}')).toEqual({ text: 'hi' })
+  expect(cleanAutoReply('Ответ готов<|im_end|>')).toBe('Ответ готов')
+})
 
 test('OpenCode owns one root; durable admission, permissions and reply fallback', async () => {
   const oldEnv = { ...process.env }
@@ -19,16 +26,20 @@ test('OpenCode owns one root; durable admission, permissions and reply fallback'
   let attempts = 0
   let admitted: any = null
   let decision = 'deny'
+  let approvalOffline = false
   let repliedWithTool = false
   let mcp: any
   let mcpName: string
   let ready = false
   let readinessChecks = 0
   let rpc: any
+  let holdReply: Promise<void> | undefined
+  let releaseReply: (() => void) | undefined
   globalThis.fetch = (async (url: any, options: any) => {
     const path = new URL(url).pathname
     const body = options.body ? JSON.parse(options.body) : null
     calls.push({ path, body })
+    if (path === '/approve-request' && approvalOffline) return new Response('offline', { status: 503 })
     if (path === '/inbound-ack') items.shift()
     return Response.json(path === '/inbound' ? { item: items[0] ?? null }
       : path === '/approve-request' ? { decision, reason: 'owner test decision' }
@@ -50,7 +61,7 @@ test('OpenCode owns one root; durable admission, permissions and reply fallback'
         if (attempts === 1) throw new Error('test admission failure')
         admitted = input; return { id: input.id }
       },
-      wait: async () => {},
+      wait: async () => { if (holdReply) await holdReply },
       context: async () => [{ id: admitted.id, type: 'user' }, { id: 'answer', type: 'assistant', content: [
         { type: 'text', text: 'pong' }, ...(repliedWithTool ? [{ type: 'tool', name: 'PolyDaemon_reply', state: { status: 'completed' } }] : [])] }],
     },
@@ -98,6 +109,15 @@ test('OpenCode owns one root; durable admission, permissions and reply fallback'
     const denied = { sessionID: 'ses_own', effect: 'deny' }
     await hooks['permission:evaluate'](denied)
     expect(denied.effect).toBe('deny')
+    for (const mode of ['offline', 'invalid', 'deny', 'allow']) {
+      approvalOffline = mode === 'offline'
+      decision = mode === 'invalid' ? 'expired' : mode
+      const pending = { sessionID: 'ses_own', effect: 'ask', action: 'shell', resources: ['fixture'] }
+      await hooks['permission:evaluate'](pending)
+      expect(pending.effect).toBe(mode === 'deny' || mode === 'allow' ? mode : 'ask')
+      if (mode === 'offline' || mode === 'invalid') await expect(hooks['tool:execute.before'](action)).rejects.toThrow()
+    }
+    approvalOffline = false
     for (let n = 0; n < 40 && !calls.some(c => c.path === '/auto-reply'); n++) await sleep(100)
     expect(attempts).toBe(2)
     expect(admitted.id).toBe('msg_tg_message')
@@ -110,13 +130,23 @@ test('OpenCode owns one root; durable admission, permissions and reply fallback'
     expect(attempts).toBe(3)
     await sleep(100)
     expect(calls.filter(c => c.path === '/auto-reply').length).toBe(1)
+    holdReply = new Promise<void>(resolve => { releaseReply = resolve })
+    items.push({ id: 'busy-first', content: 'first while busy', meta: { source: 'telegram', chat_id: '123', message_id: '44' } },
+      { id: 'busy-second', content: 'second while busy', meta: { source: 'telegram', chat_id: '123', message_id: '45' } })
+    for (let n = 0; n < 40 && attempts < 5; n++) await sleep(100)
+    expect(attempts).toBe(5)
+    expect(admitted.id).toBe('msg_tg_busy-second')
+    expect(admitted.delivery).toBe('steer')
+    expect(calls.filter(c => c.path === '/inbound-ack').slice(-2).map(c => c.body.id)).toEqual(['busy-first', 'busy-second'])
+    releaseReply!(); holdReply = undefined
     await hooks['session:retry']({ sessionID: 'ses_own', error: { message: 'at capacity' }, decision: { retry: false } })
     expect(calls.at(-1)!.body.kind).toBe('api_error')
   } finally {
+    releaseReply?.()
     cleanup?.()
     globalThis.fetch = oldFetch
     for (const key of Object.keys(process.env)) if (!(key in oldEnv)) delete process.env[key]
     Object.assign(process.env, oldEnv)
     mock.restore()
   }
-})
+}, 10000)

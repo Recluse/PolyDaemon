@@ -254,6 +254,32 @@ function insidePath(root, file) {
   return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
 }
 
+// MiMo owns its data tree; native memory-path-guard still enforces
+// agent/task ownership and reserved paths in every workspace.
+// No shell commands or deletion patches qualify.
+function isMimoDataPath(input) {
+  if (process.env.TG_BRIDGE_AGENT !== "mimo") return false;
+  const args = input.tool_input || {};
+  let paths;
+  if (["Read", "Write", "Edit"].includes(input.tool_name)) {
+    paths = [args.file_path];
+  } else if (input.tool_name === "apply_patch") {
+    const patch = String(args.input ?? "");
+    if (/^\*\*\* (?:Delete File|Move to):/m.test(patch)) return false;
+    paths = Array.from(patch.matchAll(/^\*\*\* (?:Add File|Update File): (.+)$/gm), m => m[1]);
+  } else if (["Glob", "Grep"].includes(input.tool_name)) {
+    paths = [args.path];
+  } else return false;
+  const root = path.join(os.homedir(), ".local/share/mimocode");
+  if (realPath(root) !== path.resolve(root)) return false;
+  return paths.length > 0 && paths.every(p => {
+    if (typeof p !== "string" || !p) return false;
+    if (p.startsWith("~/")) p = path.join(os.homedir(), p.slice(2));
+    const file = path.resolve(input.cwd || process.cwd(), p);
+    return insidePath(root, file) && (realPath(file) !== realPath(root) || ["Read", "Glob", "Grep"].includes(input.tool_name));
+  });
+}
+
 // Telegram attachments and bridge diagnostics are shared by all agent windows.
 // Only read tools qualify; a symlink into another directory does not.
 function isBridgeRead(input) {
@@ -279,7 +305,9 @@ function outsideWorkspace(input, root) {
   const paths = [input.cwd, args.file_path, args.path, args.workdir, args.cwd];
   if (input.tool_name === "apply_patch") {
     const patch = typeof args === "string" ? args : String(args.input ?? args.command ?? "");
-    for (const match of patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)) paths.push(match[1]);
+    const targets = Array.from(patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm), m => m[1]);
+    if (!targets.length) return true;
+    paths.push(...targets);
   }
   return paths.some((p) => {
     if (typeof p !== "string" || !p) return false;
@@ -310,7 +338,8 @@ const sensitive = isSensitive(toolName, input.tool_input) ||
 // Native OpenCode uses the same guard, without executing an approval twice.
 if (process.argv.includes("--classify")) {
   const bridgeRead = isBridgeRead(input);
-  process.stdout.write(JSON.stringify({ sensitive: sensitive && !bridgeRead, bridgeRead }));
+  const sessionMemory = isMimoDataPath(input);
+  process.stdout.write(JSON.stringify({ sensitive: sensitive && !bridgeRead && !sessionMemory, bridgeRead, sessionMemory }));
   process.exit(0);
 }
 

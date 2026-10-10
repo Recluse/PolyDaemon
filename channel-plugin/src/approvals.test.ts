@@ -72,11 +72,19 @@ test('approval waits for an explicit decision; fast taps work and bad callbacks 
       const callback = kind === 'plan' ? '/plan-callback' : '/approve-callback'
       const allow = kind === 'plan' ? 'apply' : 'once'
       const deny = kind === 'plan' ? 'decline' : 'deny'
-      const request = async () => kind === 'plan'
-        ? (await post('/exit-plan', { plan: 'Review the fixture changes.' })).json()
-        : kind === 'http'
-        ? (await post('/approve-request', { tool_name: 'fixture', sensitive: true })).json()
-        : JSON.parse((await client.callTool({ name: 'approve_action', arguments: { tool_name: 'fixture' } })).content[0].text)
+        const request = async () => kind === 'plan'
+          ? (await post('/exit-plan', { plan: 'Review the fixture changes.' })).json()
+          : kind === 'http'
+        ? await (async () => {
+          const response = await post('/approve-request', { tool_name: 'fixture', sensitive: true })
+          expect(response.status).toBe(phase === 'failure' ? 503 : 200)
+          return response.json()
+        })()
+        : await (async () => {
+          const response = await client.callTool({ name: 'approve_action', arguments: { tool_name: 'fixture' } })
+          expect(response.isError === true).toBe(phase === 'failure')
+          return JSON.parse(response.content[0].text)
+        })()
       for (const scenario of ['wait', 'early', 'failure']) {
         phase = scenario
         const published = new Promise<void>(r => { card = r })
@@ -98,6 +106,10 @@ test('approval waits for an explicit decision; fast taps work and bad callbacks 
         if (kind === 'plan') {
           expect(result.status).toBe(scenario === 'failure' ? 'fallback' : 'answered')
           expect(result.decision).toBe(scenario === 'failure' ? undefined : scenario === 'early' ? 'apply' : 'decline')
+        } else if (scenario === 'failure') {
+          expect(result.decision).toBeUndefined()
+          expect(result.behavior).toBeUndefined()
+          expect(result.error).toBe('approval_delivery_failed')
         } else expect(result.decision ?? result.behavior).toBe(scenario === 'early' ? 'allow' : 'deny')
         expect((await post(callback, { id, action: allow })).status).toBe(404)
         expect((await (await post('/status')).json())[kind === 'plan' ? 'pending_plan' : 'pending_approve']).toBe(false)

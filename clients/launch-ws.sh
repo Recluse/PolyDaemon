@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# launch-ws.sh — macOS launcher: open a Terminal window running a workspace's
-# polydaemon-claude.sh (the counterpart of Windows launch-ws.ps1). Finds the workspace by
+# launch-ws.sh — open a terminal with the selected polydaemon-<agent>.sh.
+# The counterpart of Windows launch-ws.ps1. Finds the workspace by
 # folder name under TG_WORK_DIR (default ~/Work).
 #
 #   ./launch-ws.sh <workspace-name>   open that workspace in a new Terminal window
-#   ./launch-ws.sh <name> <dir>       open <dir> itself if it holds polydaemon-claude.sh
-#                                     (what the bot sends); else search by name
+#   ./launch-ws.sh <name> <dir> [claude|codex|opencode|mimo] [resume|new]
+#                                    open the exact directory; default Claude/resume
 #   ./launch-ws.sh -l                 list launchable workspaces (those with polydaemon-claude.sh)
 #
 # Opens a TAB in iTerm2 when iTerm2 is there, otherwise a Terminal.app window.
@@ -74,21 +74,35 @@ if [ "$1" = "--probe-bad-value" ]; then
 fi
 
 NAME="$1"
+AGENT="${3:-claude}"
+MODE="${4:-resume}"
+case "$AGENT" in claude|codex|opencode|mimo) ;; *) echo 'unknown agent' >&2; exit 2 ;; esac
+case "$MODE" in resume|new) ;; *) echo 'unknown session mode' >&2; exit 2 ;; esac
+SCRIPT="polydaemon-$AGENT.sh"
+has_launcher() {
+  [ -f "$1/$SCRIPT" ] || { [ "$AGENT" = claude ] && [ "$MODE" = resume ] && [ -f "$1/tg-claude.sh" ]; }
+}
 DIR=""
-[ $# -ge 2 ] && { [ -f "$2/polydaemon-claude.sh" ] || [ -f "$2/tg-claude.sh" ]; } && DIR="$2"
+if [ -n "${2:-}" ]; then
+  has_launcher "$2" || { echo "missing $SCRIPT in $2" >&2; exit 1; }
+  DIR="$2"
+fi
 [ -n "$DIR" ] || while IFS= read -r d; do
-  { [ -f "$d/polydaemon-claude.sh" ] || [ -f "$d/tg-claude.sh" ]; } && { DIR="$d"; break; }
+  has_launcher "$d" && { DIR="$d"; break; }
 done < <(find "$WORK_DIR" -maxdepth 5 -type d -name "$NAME" -not -path '*/node_modules/*' 2>/dev/null)
-[ -n "$DIR" ] || { echo "workspace '$NAME' not found under $WORK_DIR (needs polydaemon-claude.sh). Try -l."; exit 1; }
-SCRIPT=polydaemon-claude.sh
+[ -n "$DIR" ] || { echo "workspace '$NAME' not found under $WORK_DIR (needs $SCRIPT). Try -l."; exit 1; }
 [ -f "$DIR/$SCRIPT" ] || SCRIPT=tg-claude.sh
+FRESH=""
+[ "$MODE" != new ] || FRESH=" new"
+NUDGE="${TG_MAC_NUDGE:-1}"
+[ "$AGENT" = claude ] || NUDGE=0
 
 open_in_terminal_app() {
   # A .command file double-clickable/openable by Terminal — avoids osascript
   # quoting entirely. printf %q quotes the path for the shell, so spaces and
   # special characters survive.
   local tmp="${TMPDIR:-/tmp}/tgws_$$.command"
-  printf '#!/bin/bash\ncd %q && exec bash ./%q\n' "$DIR" "$SCRIPT" > "$tmp"
+  printf '#!/bin/bash\ncd %q && exec bash ./%q%s\n' "$DIR" "$SCRIPT" "$FRESH" > "$tmp"
   chmod +x "$tmp"
   open "$tmp"   # Terminal runs it (default handler for .command)
 }
@@ -98,9 +112,9 @@ open_in_iterm() {
   # AppleScript string escaping and shell quoting stacked on each other is how a
   # path with a space or an apostrophe turns into a syntax error at launch time.
   # `quoted form of` then quotes it for the shell inside the session.
-  osascript - "$DIR" "${TG_MAC_NUDGE:-1}" "$SCRIPT" <<'APPLESCRIPT'
+  osascript - "$DIR" "$NUDGE" "$SCRIPT" "$FRESH" <<'APPLESCRIPT'
 on run argv
-	set cmd to "cd " & quoted form of (item 1 of argv) & " && exec bash ./" & quoted form of (item 3 of argv)
+	set cmd to "cd " & quoted form of (item 1 of argv) & " && exec bash ./" & quoted form of (item 3 of argv) & item 4 of argv
 	set doNudge to ((item 2 of argv) is not "0")
 	tell application "iTerm"
 		activate
@@ -199,12 +213,13 @@ open_in_tmux() {
   local wname sess
   wname="$(printf %s "$(basename "$DIR")" | tr -cs '[:alnum:]._-' '_')"
   sess="pd-$(printf %s "$wname" | tr -c '[:alnum:]_-' '-')"
+  [ "$AGENT" = claude ] || sess="$sess-$AGENT"
   if tmux has-session -t "=$sess" 2>/dev/null; then
     echo "tmux session $sess already exists — attach with: tmux attach -t $sess" >&2
     return 1
   fi
-  tmux new-session -d -s "$sess" -c "$DIR" "bash ./$SCRIPT" || return 1
-  [ "${TG_MAC_NUDGE:-1}" = 0 ] || nudge_tmux "$sess"
+  tmux new-session -d -s "$sess" -c "$DIR" "bash ./$SCRIPT$FRESH" || return 1
+  [ "$NUDGE" = 0 ] || nudge_tmux "$sess"
   echo "launched '$NAME' in tmux session $sess -> $DIR"
 }
 

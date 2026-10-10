@@ -43,7 +43,7 @@ class LauncherNamesTest(unittest.TestCase):
 
     def test_root_copies_match_templates(self):
         repo = Path(__file__).resolve().parent.parent
-        for agent in ("codex", "opencode"):
+        for agent in ("claude", "codex", "opencode", "mimo"):
             name = f"polydaemon-{agent}.sh"
             self.assertEqual((repo / name).read_bytes(), (repo / "clients" / name).read_bytes())
             self.assertTrue(os.access(repo / name, os.X_OK))

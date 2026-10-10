@@ -10,9 +10,10 @@ HyperMnesia is the optional memory companion, not part of the bridge.
 | Claude Code | `clients/polydaemon-claude.sh` | `polydaemon-claude.cmd` |
 | Codex | `clients/polydaemon-codex.sh` | `clients/polydaemon-codex.ps1` |
 | OpenCode | `clients/polydaemon-opencode.sh` | Not provided |
+| MiMo Code | `clients/polydaemon-mimo.sh` | Not provided |
 
 Copy shell launchers into the target project and make them executable. The
-root Codex and OpenCode shell launchers are identical convenience copies of
+root Codex, OpenCode and MiMo shell launchers are identical convenience copies of
 the templates. The Codex PowerShell launcher stays beside `start-agentd.ps1`;
 pass the target directory with `-Workspace`.
 

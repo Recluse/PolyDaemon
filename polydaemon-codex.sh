@@ -5,6 +5,13 @@
 # "<folder>-codex" with its OWN forum topic. It continues this folder's last
 # thread when the daemon knows one. See docs/codex.md.
 set -euo pipefail
+if [ "${1:-}" = new ]; then
+  shift
+  export TG_CODEX_NEW=1
+  case "${1:-}" in
+    resume|fork) echo 'polydaemon-codex: new cannot resume or fork a session' >&2; exit 2 ;;
+  esac
+fi
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${TG_CODEX_WS_PORT:-3210}"
 WS="ws://127.0.0.1:${PORT}"
