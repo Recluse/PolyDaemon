@@ -392,7 +392,7 @@ public class ConIn {
   # recoverable, a window whose claude has exited is not. The blind presses remain
   # for the case they were written for — a screen this handler cannot read at all.
   if ($sawUnknownPrompt -and -not $acted -and -not $resumeDone) {
-    try { Write-Output "left '$($match.Name)' waiting on a prompt this script does not recognise; not guessing — answer it in the window" } catch {}
+    try { Write-Output "left '$($match.Name)' waiting on a prompt this script does not recognise; not guessing - answer it in the window" } catch {}
   }
   elseif (-not $acted -and -not $resumeDone) {
     $results = @()

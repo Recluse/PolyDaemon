@@ -14,7 +14,7 @@ HOST = os.environ.get('POLYDAEMON_LAUNCH_HOST', 'powershell.exe')
 class LaunchWorkspace(unittest.TestCase):
     def test_keep_compact_child_environment_and_restore(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             folder = root / 'Project'
             folder.mkdir()
             for agent in ('claude','codex'):
@@ -48,7 +48,7 @@ class LaunchWorkspace(unittest.TestCase):
 
     def test_exact_workspace_agents_and_new(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             folder = root / 'Project # space & test'
             folder.mkdir()
             profile = root / 'profile'
@@ -72,7 +72,7 @@ class LaunchWorkspace(unittest.TestCase):
 
     def test_legacy_only_claude_default(self):
         with tempfile.TemporaryDirectory() as tmp:
-            folder = Path(tmp)
+            folder = Path(tmp).resolve()
             (folder / 'tg-claude.cmd').write_text('@echo off\n')
             self.assertEqual(self.run_plan(folder, folder / 'profile').returncode, 0)
             self.assertNotEqual(self.run_plan(folder, folder / 'profile', '-NewSession').returncode, 0)
@@ -80,11 +80,11 @@ class LaunchWorkspace(unittest.TestCase):
 
     def test_ownership_is_agent_specific(self):
         with tempfile.TemporaryDirectory() as tmp:
-            folder = Path(tmp) / 'Project'
+            folder = Path(tmp).resolve() / 'Project'
             folder.mkdir()
             for agent in ('codex','mimo'):
                 (folder / f'polydaemon-{agent}.cmd').write_text('@echo off\n')
-            profile = Path(tmp) / 'profile'
+            profile = Path(tmp).resolve() / 'profile'
             state = profile / '.tg-bridge-channel'
             state.mkdir(parents=True)
             registry = state / 'instances.json'
@@ -100,7 +100,7 @@ class LaunchWorkspace(unittest.TestCase):
 
     def test_non_claude_actual_spawn_has_no_key_injection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             folder = root / 'Spawn # space & test'
             folder.mkdir()
             for agent in ('codex','opencode','mimo'):

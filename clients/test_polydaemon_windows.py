@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parent.parent
 class WindowsLaunchers(unittest.TestCase):
     def test_claude_identity_selection_and_compact(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             physical = root / 'Physical project'
             physical.mkdir()
             alias = root / 'Logical alias'
@@ -71,7 +71,7 @@ class WindowsLaunchers(unittest.TestCase):
     def test_native_codex_session_contract(self):
         """Real cmd dispatcher, loopback daemon fixture and captured CLI argv."""
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             workspace = root / 'physical project'
             workspace.mkdir()
             alias = root / 'alias project'
@@ -181,7 +181,7 @@ class WindowsLaunchers(unittest.TestCase):
 
     def test_new_default_conflicts_and_workspace_quoting(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             workspace = root / 'Project # test & space'
             workspace.mkdir()
             profile = root / 'profile'
@@ -245,7 +245,7 @@ class WindowsLaunchers(unittest.TestCase):
 
     def test_agent_aware_guards_and_physical_parent_alias(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             physical = root / 'Physical'
             child = physical / 'Child'
             child.mkdir(parents=True)
@@ -272,7 +272,7 @@ class WindowsLaunchers(unittest.TestCase):
 
     def test_actual_command_dispatch_with_stubs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             workspace = root / 'Actual Project & spaces'
             workspace.mkdir()
             bin_dir = root / 'bin'

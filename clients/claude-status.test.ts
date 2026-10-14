@@ -82,7 +82,8 @@ test('packaged Node helper discovers only its own live Claude registry row', asy
   writeFileSync(join(home, '.tg-bridge-channel/instances.json'), JSON.stringify({ own: row }))
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TG_|CLAUDE|CODEX|MIMOCODE|TMUX)/.test(k)))
   const run = async (uid: string) => {
-    const child = Bun.spawn(['node', fileURLToPath(new URL('./claude-status.cjs', import.meta.url)), cwd], {
+    // Node 22 emits an ExperimentalWarning when the locator loads node:sqlite.
+    const child = Bun.spawn(['node', '--disable-warning=ExperimentalWarning', fileURLToPath(new URL('./claude-status.cjs', import.meta.url)), cwd], {
       env: { ...env, HOME: home, USERPROFILE: home, TG_WINDOW_UID: uid }, stdout: 'pipe', stderr: 'pipe',
     })
     const output = await new Response(child.stdout).text()
