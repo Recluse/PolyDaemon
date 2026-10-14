@@ -13,6 +13,11 @@ import type { InstanceRow } from './routes-db.ts'
 
 const RPC_TIMEOUT_MS = 4000
 
+export async function topicMessageRemote(event: { chat_id: number; message_thread_id: number; message_id: number }): Promise<void> {
+  const result = await rpc('/topic-message', event)
+  if (!result.ok) log(`PolyDaemon: topic activity notification failed (${result.status})`)
+}
+
 async function rpc(
   path: string,
   body: unknown,
@@ -155,7 +160,11 @@ export type MyTask = { id: number; from: string; kind: string; text: string; sta
 export async function myTasksRemote(): Promise<{ ok: boolean; tasks: MyTask[]; reason?: string }> {
   const r = await rpc('/my-tasks', { window: WORKSPACE_DISPLAY_NAME })
   if (!r.ok) return { ok: false, tasks: [], reason: r.data?.reason || `HTTP ${r.status}` }
-  return { ok: true, tasks: Array.isArray(r.data?.tasks) ? r.data.tasks : [] }
+  if (r.data?.ok === false || !Array.isArray(r.data?.tasks) || !r.data.tasks.every((t: any) =>
+    Number.isSafeInteger(t?.id) && t.id > 0 && ['from', 'kind', 'text', 'state'].every(k => typeof t[k] === 'string'))) {
+    return { ok: false, tasks: [], reason: 'Invalid task response' }
+  }
+  return { ok: true, tasks: r.data.tasks }
 }
 
 export async function setTaskStateRemote(

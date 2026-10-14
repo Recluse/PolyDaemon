@@ -111,7 +111,7 @@ STRINGS: dict[str, str] = {
     "cb.launch_failed": "❌ Не запустилось: {error}",
     "cb.launch_none_here": "✅ На {machine} всё уже запущено (или нет лаунчера).",
     "cb.launch_pick": "🚀 Какой воркспейс запустить?",
-    "cb.launch_starting": "🚀 Запускаю <b>{name}</b> — окно поднимается ~15с, придёт анонс «🟢 Окно появилось» и топик оживёт.",
+    "cb.launch_starting": "🚀 Скрипт запуска <b>{name}</b> завершился. Регистрация агента ещё не подтверждена; при подключении появится «🟢 Окно появилось».",
     "cb.launch_starting_toast": "🚀 Запускаю {name}…",
     "cb.override_cleared": "✅ Override снят",
     "cb.perm_bypass_confirm": "⚠️ Включить <b>Bypass permissions</b> для <b>{workspace}</b>?\n\nClaude будет выполнять любые действия в этом workspace БЕЗ запроса разрешения.",

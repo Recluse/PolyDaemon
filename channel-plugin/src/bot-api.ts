@@ -6,12 +6,47 @@ import { myPrefix, myTopicBinding } from './topics.ts'
 import { heartbeatRemote } from './bot-rpc.ts'
 import { REGISTRY_ID } from './registry.ts'
 import { alreadyAttributed, renderPrefix } from './prefix.ts'
+import { isPromptCard, validTopicMessage, type TopicMessage } from './prompt-reminders.ts'
+import { topicMessageRemote } from './bot-rpc.ts'
+import { notifyLocalTopic } from './local-registry.ts'
+
+let sentObserver: ((method: string, payload: Record<string, any>, messageId: number) => void) | undefined
+let topicObserver: ((event: TopicMessage) => void) | undefined
+export function observeTopicMessages(sent: typeof sentObserver, topic: typeof topicObserver): void {
+  sentObserver = sent
+  topicObserver = topic
+}
 
 // ---------------------------------------------------------------------------
 // grammy Bot — outbound only (no polling)
 // ---------------------------------------------------------------------------
 
 export const bot = new Bot(TOKEN!, { client: { apiRoot: API_ROOT } })
+
+// Installed inside the formatting/routing transformers: observe the actual destination.
+bot.api.config.use(async (prev, method, payload, signal) => {
+  const result = await prev(method, payload, signal)
+  if (!result.ok) return result
+  try {
+    const p = payload as Record<string, any>
+    if (method.startsWith('editMessage')) sentObserver?.(method, p, Number(p.message_id))
+    if (method.startsWith('send') || method === 'copyMessage' || method === 'forwardMessage') {
+      const messages = Array.isArray(result.result) ? result.result : [result.result]
+      for (const message of messages as any[]) {
+        const id = message?.message_id
+        sentObserver?.(method, p, id)
+        const event = { chat_id: Number(message?.chat?.id ?? p.chat_id),
+          message_thread_id: Number(message?.message_thread_id ?? p.message_thread_id), message_id: id }
+        if (!isPromptCard(p.reply_markup) && validTopicMessage(event)) {
+          topicObserver?.(event)
+          if (BOT_URL) void topicMessageRemote(event)
+          else void notifyLocalTopic(event).catch(() => {})
+        }
+      }
+    }
+  } catch { /* Observability must never turn a successful send into a retry. */ }
+  return result
+})
 
 // 429 auto-retry. The forum chat is shared by EVERY window plus the router
 // bot's status edits — Telegram's per-group budget (~20 msg/min) is a common

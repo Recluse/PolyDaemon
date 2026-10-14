@@ -28,11 +28,14 @@ async def check():
         assert f"launch:go:mimo:1:{cb_token('C:\\work\\shared')}" in callbacks
         assert all(len(s.encode()) <= 64 for s in callbacks)
         calls = []
+        tasks = []
+        ctx.application.create_task = lambda coro: tasks.append(asyncio.create_task(coro))
         async def post(*args): calls.append(args)
         ctx.application.bot_data["bridge_client"] = NS(post_launch=post)
         async def noop(*args, **kwargs): pass
         query = NS(data=f"launch:go:mimo:1:{cb_token('C:\\work\\shared')}", answer=noop, edit_message_text=noop)
         await launch_callback(NS(callback_query=query), ctx)
+        await asyncio.gather(*tasks)
         assert calls == [("http://win", "", "shared", "C:\\work\\shared", "mimo", True)]
         calls.clear()
         query.data = f"launch:go:codex:0:{cb_token('/work/shared')}"
@@ -40,11 +43,23 @@ async def check():
         query.data = f"launch:go:{cb_token('shared')}"  # ambiguous legacy title
         await launch_callback(NS(callback_query=query), ctx)
         assert not calls
+        edits = []
+        async def edit(text, **kwargs): edits.append(text)
+        async def failed(*args): raise RuntimeError('PowerShell rejected <Agent>')
+        ctx.application.bot_data["bridge_client"] = NS(post_launch=failed)
+        query.edit_message_text = edit
+        query.data = f"launch:go:codex:0:{cb_token('C:\\work\\shared')}"
+        await launch_callback(NS(callback_query=query), ctx)
+        await asyncio.gather(*tasks)
+        assert 'PowerShell rejected &lt;Agent&gt;' in edits[-1]
 
     requests = []
     modern = False
+    failure = False
     def handler(req):
         requests.append(req)
+        if failure and req.method == 'POST':
+            return httpx.Response(502, json={"ok": False, "reason": "launcher exit 7: native failure"})
         return httpx.Response(200, json={"ok": True, **({"agents": list(launcher.AGENT_LABELS), "new_session": True} if modern else {})})
     client = ChannelPluginClient([])
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -60,6 +75,12 @@ async def check():
         import json
         assert json.loads(requests[-1].content)["agent"] == "mimo"
         assert json.loads(requests[-1].content)["new_session"] is True
+        failure = True
+        try:
+            await client.post_launch("http://mac", "fixture", "shared", "/work/shared", "codex")
+            raise AssertionError("launcher failure must reach Telegram")
+        except RuntimeError as exc:
+            assert str(exc) == "launcher exit 7: native failure"
     finally:
         await client.aclose()
     print("agent launch routing check OK")

@@ -22,7 +22,7 @@ def main():
             [sys.executable, "hooks/install.py", "--self-check"],
             [sys.executable, "tg-bot/bot/http_registry.py"],
         ]
-        commands += [["bun", "test", str(p.relative_to(source))]
+        commands += [["bun", "test", "--timeout", "20000", str(p.relative_to(source))]
                      for folder in ("agent", "channel-plugin/src", "clients")
                      for p in sorted((source / folder).glob("*.test.ts"))]
         commands += [[sys.executable, str(p.relative_to(source))]

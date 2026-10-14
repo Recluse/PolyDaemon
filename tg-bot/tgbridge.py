@@ -149,6 +149,8 @@ def build_application(config: dict[str, Any]) -> Application:
     storage = Storage(DB_PATH)
     sessions = SessionStore(storage, default_instance=str(bot_config.get("default_instance", "")))
     bridge_client = build_bridge_client(config, storage)
+    from bot.topic_activity import TopicActivity, TopicMessageObserver
+    topic_activity = TopicActivity(config, storage, bridge_client)
 
     # Optional inbound registration server for ROAMING plugins on other machines
     # (see bot/http_registry.py). Off unless bot.registry_bind_host is set, so the
@@ -191,7 +193,7 @@ def build_application(config: dict[str, Any]) -> Application:
                     registry_server = start_registry_server(
                         storage, registry_host, registry_port, registry_token,
                         verify_source_ip=registry_verify_source_ip,
-                        router=router, loop=asyncio.get_running_loop(),
+                        router=router, loop=asyncio.get_running_loop(), activity=topic_activity,
                     )
                 except Exception:
                     logger.exception("failed to start registry HTTP server on %s:%s", registry_host, registry_port)
@@ -254,7 +256,7 @@ def build_application(config: dict[str, Any]) -> Application:
         except Exception:
             logger.exception("storage close failed")
 
-    builder = Application.builder().token(token)
+    builder = Application.builder().token(token).rate_limiter(TopicMessageObserver(topic_activity))
     if use_local:
         builder = (
             builder
@@ -278,6 +280,7 @@ def build_application(config: dict[str, Any]) -> Application:
     topics.configure(config)
 
     register_handlers(application, config, sessions, bridge_client, storage)
+    application.bot_data["topic_activity"] = topic_activity
     # Inbound media handling forks on this: cloud mode base64-inlines images;
     # local mode hands every attachment (images included) to Claude as a
     # file_id, because the bytes live on the server's volume, not the host.

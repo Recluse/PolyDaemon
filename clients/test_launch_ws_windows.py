@@ -12,6 +12,34 @@ HOST = os.environ.get('POLYDAEMON_LAUNCH_HOST', 'powershell.exe')
 
 @unittest.skipUnless(os.name == 'nt', 'native Windows required')
 class LaunchWorkspace(unittest.TestCase):
+    def test_keep_compact_child_environment_and_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / 'Project'
+            folder.mkdir()
+            for agent in ('claude','codex'):
+                (folder / f'polydaemon-{agent}.cmd').write_text('@echo off\n')
+                for inherited in ('', 'caller-value'):
+                    harness = root / 'harness.ps1'
+                    record = root / 'record.json'
+                    harness.write_text(
+                        "function Add-Type { throw 'Unexpected key/window manipulation' }\n"
+                        "function Start-Process { param($FilePath,$ArgumentList,$WorkingDirectory,$WindowStyle,[switch]$PassThru); "
+                        "$global:fixtureChild=$env:TG_KEEP_AUTOCOMPACT; return [pscustomobject]@{Id=12345} }\n"
+                        + f"& '{SCRIPT}' -Dir '{folder}' -Agent {agent} -KeepAutoCompact -Enter 0 -ResumeChoice 0 -NoMinimize\n"
+                        + f"@{{child=$global:fixtureChild;after=$env:TG_KEEP_AUTOCOMPACT}} | ConvertTo-Json | Set-Content -LiteralPath '{record}'\n",
+                        encoding='utf-8-sig')
+                    env = {**os.environ,'USERPROFILE':str(root/'profile'),'TG_KEEP_AUTOCOMPACT':inherited}
+                    result = subprocess.run([HOST,'-NoProfile','-ExecutionPolicy','Bypass','-File',str(harness)],
+                                            env=env,capture_output=True,text=True,timeout=15)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    call = json.loads(record.read_text(encoding='utf-8-sig'))
+                    self.assertEqual(call['child'] or '', '1' if agent=='claude' else inherited)
+                    self.assertEqual(call['after'] or '',inherited)
+            result = self.run_plan(folder,root/'profile','-Agent','claude','-KeepAutoCompact')
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertNotIn('--settings',json.loads(result.stdout)['arguments'])
+
     def run_plan(self, folder, profile, *args):
         return subprocess.run([HOST, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), 'supplied-name',
                                '-Dir', str(folder), '-Check', *args],

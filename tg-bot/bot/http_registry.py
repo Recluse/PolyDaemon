@@ -46,6 +46,7 @@ def make_registry_server(
     storage: Storage, host: str, port: int, enroll_token: str, verify_source_ip: bool = True,
     router: "InterWindowRouter | None" = None,
     loop: asyncio.AbstractEventLoop | None = None,
+    activity: Any = None,
 ) -> ThreadingHTTPServer:
     # verify_source_ip: when True (default, direct mesh), a remote peer must
     # advertise its OWN source IP and rows are namespaced by it (anti-spoof). Turn
@@ -354,6 +355,16 @@ def make_registry_server(
                         # files until the TTL ran out.
                         forget(sid)
                     self._send(200, {"ok": True})
+                elif path == "/topic-message":
+                    from bot.topic_activity import valid_event
+                    if not valid_event(body):
+                        self._send(400, {"ok": False, "reason": "invalid topic message"})
+                        return
+                    if activity is None or loop is None:
+                        self._send(503, {"ok": False, "reason": "topic observer unavailable"})
+                        return
+                    loop.call_soon_threadsafe(activity.note, body)
+                    self._send(200, {"ok": True})
                 elif path == "/route":
                     # A remote plugin can't write the shared bot.db, so it asks the
                     # bot to record its (chat_id, message_id) -> instance route here
@@ -459,11 +470,12 @@ def start_registry_server(
     storage: Storage, host: str, port: int, enroll_token: str, verify_source_ip: bool = True,
     router: "InterWindowRouter | None" = None,
     loop: asyncio.AbstractEventLoop | None = None,
+    activity: Any = None,
 ) -> ThreadingHTTPServer:
     """Start the registry server in a daemon thread. Returns the server so the
     caller can shut it down in post_shutdown."""
     server = make_registry_server(
-        storage, host, port, enroll_token, verify_source_ip, router=router, loop=loop
+        storage, host, port, enroll_token, verify_source_ip, router=router, loop=loop, activity=activity
     )
     t = threading.Thread(target=server.serve_forever, name="tg-bridge-registry", daemon=True)
     t.start()

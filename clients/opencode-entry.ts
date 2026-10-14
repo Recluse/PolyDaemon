@@ -5,7 +5,7 @@ import { join } from 'node:path'
 export function bridgeEntry(repo: string) {
   const machine = join(homedir(), '.config/polydaemon/machine.env')
   if (existsSync(machine)) {
-    const call = Bun.spawnSync(['python3', '-c',
+    const call = Bun.spawnSync([process.platform === 'win32' ? 'python' : 'python3', '-c',
       'import sys,json,pathlib;sys.path.insert(0,sys.argv[1]);import mcp_entry as m;r=pathlib.Path(sys.argv[1]).parent;print(json.dumps(m.build_entry(m.parse_env(m.MACHINE_ENV.read_text(encoding="utf-8-sig")),r,m.plugin_env_keys(r))))',
       join(repo, 'hooks')])
     if (call.exitCode) throw new Error('Invalid bridge machine.env; run hooks/install.py --mcp --dry-run')

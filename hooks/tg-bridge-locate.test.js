@@ -1,11 +1,22 @@
 "use strict";
 const assert = require("node:assert/strict");
+const path = require("node:path");
 const { matchRow } = require("./tg-bridge-locate.js");
 
-const bridge = { cwd: "/work/bridge", workspace_name: "bridge-codex", parent_pid: 123 };
-const project = { cwd: "/work/sample-project", workspace_name: "sample-project-codex", parent_pid: 123 };
-const rootless = { cwd: "/", workspace_name: "", parent_pid: 123 };
+const bridge = { cwd: path.resolve("/work/bridge"), workspace_name: "bridge-codex", parent_pid: 123 };
+const project = { cwd: path.resolve("/work/sample-project"), workspace_name: "sample-project-codex", parent_pid: 123 };
+const rootless = { cwd: path.parse(process.cwd()).root, workspace_name: "", parent_pid: 123 };
 const ctx = { parentPid: 123, windowUid: "", agent: "codex" };
+if (process.platform !== 'win32') {
+  const upper = { ...project, cwd: '/nonexistent-case-fixture/Project' };
+  const lower = { ...project, cwd: '/nonexistent-case-fixture/project' };
+  assert.equal(matchRow([upper, lower], lower.cwd, ctx), lower);
+  assert.equal(matchRow([lower, upper], upper.cwd, ctx), upper);
+}
+if (process.platform === 'win32') {
+  const normalized = { ...project, cwd: project.cwd.toUpperCase().replace(/\\/g, '/') };
+  assert.equal(matchRow([bridge, normalized], project.cwd, ctx), normalized);
+}
 assert.equal(matchRow([bridge, rootless, project], "/work/sample-project/src", ctx), project);
 assert.equal(matchRow([bridge, project], "/outside", ctx), null);
 assert.equal(matchRow([project], "/outside", ctx), project);

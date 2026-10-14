@@ -49,6 +49,7 @@ import {
   reRegister,
 } from './src/registry.ts'
 import { recordMessageRoute } from './src/routes-db.ts'
+import { PromptReminders, promptKey, validTopicMessage } from './src/prompt-reminders.ts'
 import { persistInbound, peekInbound, ackInbound, type InboundItem } from './src/inbound-queue.ts'
 import { listWindowsRemote, routeWindowRemote, myTasksRemote, setTaskStateRemote } from './src/bot-rpc.ts'
 import { contextUsage } from './src/context-usage.ts'
@@ -59,6 +60,7 @@ import { checkApiError, transcriptMtime } from './src/api-error-watch.ts'
 import { modelKeyboardRows } from './src/models.ts'
 import {
   bot,
+  observeTopicMessages,
   sendMessageSafe,
   MAX_CHUNK_LIMIT,
   MAX_ATTACHMENT_BYTES,
@@ -142,6 +144,33 @@ type AskPending = {
   awaitingText: boolean     // true once user tapped "Свой ответ"; suppresses other inputs
 }
 const pendingAskQuestions = new Map<string, AskPending>()
+
+const promptReminders = new PromptReminders(key => {
+  const [kind, id] = key.split(':')
+  return kind === 'approve' ? pendingApprovals.has(id!)
+    : kind === 'plan' ? pendingPlans.has(id!) : pendingAskQuestions.has(id!)
+}, async payload => {
+  const key = promptKey(payload.reply_markup)
+  const question = key?.startsWith('ask:') ? pendingAskQuestions.get(key.slice(4)) : undefined
+  if (question) {
+    payload = question.awaitingText ? { ...payload,
+      text: '✍️ Напиши свой ответ одним сообщением. (Ожидаю текст для предыдущего вопроса.)',
+      reply_markup: { force_reply: true, selective: true },
+    } : { ...payload, reply_markup: renderAskKeyboard(key!.slice(4), question) }
+  }
+  const { chat_id, text, ...extra } = payload
+  const sent = await bot.api.sendMessage(chat_id, text, extra)
+  if (question) question.messageId = sent.message_id
+  recordMessageRoute(chat_id, sent.message_id)
+  return sent.message_id
+}, async (chat, message) => {
+  await bot.api.editMessageReplyMarkup(chat, message, { reply_markup: { inline_keyboard: [] } })
+}, () => log('PolyDaemon: prompt reminder delivery failed; request remains pending'))
+observeTopicMessages((method, payload, id) => {
+  if (method === 'sendMessage') promptReminders.sent(payload, id)
+  else if (method.startsWith('editMessage')) promptReminders.edited(payload)
+}, event => promptReminders.note(event))
+setInterval(() => promptReminders.sweep(), 30_000).unref()
 
 // Inline-keyboard renderer for an AskUserQuestion message. Shared by the initial
 // send and editMessageReplyMarkup on each toggle so the on-screen state always
@@ -1671,10 +1700,10 @@ return "notfound"`
             if (questions.length === 0) {
               return Response.json({ status: 'invalid', reason: 'questions[] required' }, { status: 400 })
             }
-            if (lastChatId == null) {
+            const chatId = approvalChatFor(lastChatId)
+            if (chatId == null) {
               return Response.json({ status: 'fallback', reason: 'No active Telegram session.' })
             }
-            const chatId = lastChatId
 
             type ResultAnswer = {
               question: string
@@ -1840,6 +1869,21 @@ return "notfound"`
             }
 
             return Response.json({ error: `unknown action: ${action}` }, { status: 400 })
+          }
+
+          if (req.method === 'POST' && url.pathname === '/topic-activity') {
+            const event = await req.json().catch(() => null)
+            if (!validTopicMessage(event)) return Response.json({ ok: false }, { status: 400 })
+            promptReminders.note(event)
+            return Response.json({ ok: true })
+          }
+
+          if (req.method === 'GET' && url.pathname === '/tasks') {
+            const result = await myTasksRemote()
+            if (!result.ok) return Response.json({ ok: false, tasks: null, reason: 'Tasks unavailable' }, { status: 503 })
+            return Response.json({ ok: true, tasks: result.tasks.map(t => ({
+              id: t.id, from: t.from, kind: t.kind, text: t.text, state: t.state,
+            })) })
           }
 
           if (req.method === 'GET' && url.pathname === '/status') {

@@ -83,6 +83,18 @@ class ChannelPluginClient:
             raise PermissionError(f"Auth failed for instance '{instance_name}' — check auth_token.")
         resp.raise_for_status()
 
+    async def post_topic_activity(self, instance: InstanceConfig, body: dict[str, Any]) -> None:
+        """Notify an exact live process, including siblings with their own pending prompts."""
+        try:
+            response = await self._get_client().post(
+                f"http://{instance.host}:{instance.port}/topic-activity", json=body,
+                headers={"Authorization": f"Bearer {instance.auth_token}"}, timeout=self._ping_timeout,
+            )
+            if response.status_code != 404:  # older plugins simply lack this feature
+                response.raise_for_status()
+        except Exception:
+            logger.debug("topic activity delivery failed; registry and decisions unchanged")
+
     async def post_launch(self, agent_url: str, token: str, name: str, cwd: str = "", agent: str = "claude", new_session: bool = False) -> None:
         """POST /launch to a machine's launch-agent (clients/launch-agent.ts).
 
@@ -106,11 +118,20 @@ class ChannelPluginClient:
             f"{agent_url.rstrip('/')}/launch",
             json={"name": name, "cwd": cwd, "agent": agent, "new_session": new_session},
             headers={"Authorization": f"Bearer {token}"},
-            timeout=self._post_timeout,
+            timeout=100.0,  # the launcher may handle startup prompts for up to 90s
         )
         if resp.status_code == 401:
             raise PermissionError("launch-agent auth failed — check the shared token.")
+        if not resp.is_success:
+            try:
+                reason = resp.json().get("reason")
+            except (ValueError, AttributeError):
+                reason = None
+            if reason:
+                raise RuntimeError(str(reason))
         resp.raise_for_status()
+        if resp.json().get("ok") is not True:
+            raise RuntimeError("launch-agent did not confirm launcher completion")
 
     async def post_inject(self, instance_name: str, text: str) -> tuple[bool, str]:
         """POST /inject — type an in-session slash command (e.g. "/effort high")

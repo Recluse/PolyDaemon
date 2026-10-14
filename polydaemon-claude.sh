@@ -21,12 +21,24 @@ set -euo pipefail
 if [ "${1:-}" = new ]; then
   shift
   export TG_CLAUDE_NEW=1
-  for arg in "$@"; do
-    case "$arg" in
-      --continue|-c|--resume|--resume=*|-r|--fork-session)
-        echo 'polydaemon-claude: new cannot continue, resume or fork a session' >&2; exit 2 ;;
-    esac
-  done
+fi
+# Parse selectors without mistaking option values or text after -- for flags.
+EXPLICIT=0
+MANAGEMENT=0
+POSITIONAL=""
+EXPECT_VALUE=0
+for arg in "$@"; do
+  if [ "$EXPECT_VALUE" = 1 ]; then EXPECT_VALUE=0; continue; fi
+  [ "$arg" != -- ] || break
+  case "$arg" in --help|-h|--version|-V|-v) MANAGEMENT=1 ;; esac
+  case "$arg" in --session|--session=*|--session-id|--session-id=*|--resume|--resume=*|--continue|--continue=*|--fork|--fork=*|--fork-session|--fork-session=*|-c|-r) EXPLICIT=1 ;; esac
+  case "$arg" in --model|-m|--settings|--name|--permission-mode|--max-turns|--max-budget-usd|--mcp-config|--allowedTools|--disallowedTools|--append-system-prompt|--system-prompt|--output-format|--input-format|--session|--session-id|--resume|-r|--port|--hostname) EXPECT_VALUE=1; continue ;; esac
+  case "$arg" in -*) ;; *) [ -n "$POSITIONAL" ] || POSITIONAL="$arg" ;; esac
+done
+case "$POSITIONAL" in resume|continue|fork) EXPLICIT=1 ;; esac
+if [ "${TG_CLAUDE_NEW:-0}" = 1 ] && [ "$EXPLICIT" = 1 ]; then
+  echo 'polydaemon-claude: new cannot be combined with session/resume/continue/fork selection' >&2
+  exit 2
 fi
 # Claude auto-update churns the binary path daily → macOS re-asks every TCC
 # (folder/automation) permission each version. Pin the running version per
@@ -34,6 +46,7 @@ fi
 export DISABLE_AUTOUPDATER=1
 
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$MANAGEMENT" = 1 ]; then exec claude "$@"; fi
 # TG_WS_NAME overrides the window name — set it when another device runs a
 # window off the same-named folder (the bot keys windows by NAME, so two
 # devices sharing one name collide and the later one steals the window).
@@ -107,7 +120,7 @@ export TG_WINDOW_UID
 # the whole point of the twin.
 RESUME=""
 PROJ_DIR="$HOME/.claude/projects/$(printf %s "$(pwd -P)" | tr -c '[:alnum:]' '-')"
-if [ "${TG_CLAUDE_NEW:-0}" != 1 ] && ls "$PROJ_DIR"/*.jsonl >/dev/null 2>&1; then
+if [ "${TG_CLAUDE_NEW:-0}" != 1 ] && [ "$EXPLICIT" = 0 ] && ls "$PROJ_DIR"/*.jsonl >/dev/null 2>&1; then
   RESUME="--continue"
 fi
 

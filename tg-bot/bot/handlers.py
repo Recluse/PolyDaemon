@@ -87,6 +87,8 @@ def register_handlers(
     # before any other handler sees the update. Replaces the per-handler
     # _ensure_allowed checks.
     application.add_handler(TypeHandler(Update, _allowed_users_gate), group=-1)
+    from bot.topic_activity import incoming_topic_message
+    application.add_handler(TypeHandler(Update, incoming_topic_message), group=1)
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))

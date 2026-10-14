@@ -8,11 +8,30 @@ set -euo pipefail
 if [ "${1:-}" = new ]; then
   shift
   export TG_CODEX_NEW=1
-  case "${1:-}" in
-    resume|fork) echo 'polydaemon-codex: new cannot resume or fork a session' >&2; exit 2 ;;
-  esac
+fi
+# Parse selectors without mistaking option values or text after -- for flags.
+EXPLICIT=0
+MANAGEMENT=0
+POSITIONAL=""
+EXPECT_VALUE=0
+for arg in "$@"; do
+  if [ "$EXPECT_VALUE" = 1 ]; then EXPECT_VALUE=0; continue; fi
+  [ "$arg" != -- ] || break
+  case "$arg" in --help|-h|--version|-V) MANAGEMENT=1 ;; esac
+  case "$arg" in --session|--session=*|--session-id|--session-id=*|--resume|--resume=*|--continue|--continue=*|--fork|--fork=*|--fork-session|--fork-session=*|-r) EXPLICIT=1 ;; esac
+  case "$arg" in -c|--config|-s|--sandbox|-a|--ask-for-approval|-C|--cd|-m|--model|-p|--profile|-i|--image|--remote|--remote-auth-token-env|--local-provider|--enable|--disable|--add-dir) EXPECT_VALUE=1; continue ;; esac
+  case "$arg" in -*) ;; *) [ -n "$POSITIONAL" ] || POSITIONAL="$arg" ;; esac
+done
+case "$POSITIONAL" in resume|continue|fork) EXPLICIT=1 ;; esac
+if [ "${TG_CODEX_NEW:-0}" = 1 ] && [ "$EXPLICIT" = 1 ]; then
+  echo 'polydaemon-codex: new cannot be combined with session/resume/continue/fork selection' >&2
+  exit 2
 fi
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$POSITIONAL" in
+  agents|mcp|app-server|doctor|login|logout|features|plugin|completion|update|exec|e|review|queue|sandbox|debug|apply|a|app|archive|delete|unarchive|migrate-rollouts|cloud|exec-server|remote-control|help) MANAGEMENT=1 ;;
+esac
+if [ "$MANAGEMENT" = 1 ]; then exec codex --cd "$(pwd -P)" "$@"; fi
 PORT="${TG_CODEX_WS_PORT:-3210}"
 WS="ws://127.0.0.1:${PORT}"
 if ! curl -sm2 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
@@ -22,14 +41,27 @@ fi
 # Resume this folder's most recent thread, if the daemon knows it.
 RESUME_ID=""
 AGENT_TOML="$HOME/.tg-bridge/agent.toml"
-if [ -f "$AGENT_TOML" ] && [ "${TG_CODEX_NEW:-0}" != 1 ]; then
+if [ -f "$AGENT_TOML" ] && [ "${TG_CODEX_NEW:-0}" != 1 ] && [ "$EXPLICIT" = 0 ]; then
   TOKEN="$(grep '^auth_token' "$AGENT_TOML" | cut -d'"' -f2)"
-  APORT="$(grep '^port' "$AGENT_TOML" | tr -dc '0-9')"
-  RESUME_ID="$(curl -sm4 -H "Authorization: Bearer ${TOKEN}" \
+  APORT="$(grep '^port' "$AGENT_TOML" | tr -dc '0-9' || true)"
+  RESPONSE="$(curl -fsm4 -H "Authorization: Bearer ${TOKEN}" \
     --get --data-urlencode "cwd=$(pwd -P)" \
     "http://127.0.0.1:${APORT:-3200}/v1/codex/last-thread" \
-    2>/dev/null | sed -n 's/.*"thread_id":"\([^"]*\)".*/\1/p')"
+    2>/dev/null)" || { echo 'polydaemon-codex: last-thread lookup failed; refusing to silently start fresh' >&2; exit 1; }
+  RESUME_ID="$(printf '%s' "$RESPONSE" | node -e '
+    let data=""; process.stdin.on("data", c => data += c);
+    process.stdin.on("end", () => { try {
+      const value=JSON.parse(data);
+      if(!value || !Object.hasOwn(value, "thread_id") || value.ok === false || !(value.thread_id == null || typeof value.thread_id === "string")) throw Error();
+      if(value.thread_id && !/^[A-Za-z0-9-]+$/.test(value.thread_id)) throw Error();
+      process.stdout.write(value.thread_id || "");
+    } catch { console.error("polydaemon-codex: invalid last-thread response"); process.exitCode=1; } });
+  ')"
 fi
+# Opt in for centrally managed installations only; never alter global settings.
+UPDATE=""
+[ "${TG_CODEX_CHECK_UPDATE:-}" != 0 ] || UPDATE="check_for_update_on_startup=false"
+if [ -n "$UPDATE" ]; then set -- -c "$UPDATE" "$@"; fi
 if [ -n "$RESUME_ID" ]; then
   echo "polydaemon-codex: continuing thread ${RESUME_ID}"
   exec codex --remote "$WS" resume "$RESUME_ID" --cd "$(pwd -P)" "$@"

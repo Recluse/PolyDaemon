@@ -47,6 +47,14 @@ test('HTTP launch selects the exact agent/mode; shell dispatch never opens a rea
         expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual(['shared', cwd, agent, fresh ? 'new' : 'resume'])
       }
     }
+    writeFileSync(runner, '#!/bin/bash\necho "PowerShell rejected Agent" >&2\nexit 7\n')
+    const failure = await post({ name: 'shared', cwd, agent: 'codex' })
+    expect(failure.status).toBe(502)
+    expect((await failure.json()).reason).toContain('exit 7: PowerShell rejected Agent')
+    writeFileSync(runner, '#!/bin/bash\nsleep 0.1\necho delayed-failure >&2\nexit 8\n')
+    const delayed = await post({ name: 'shared', cwd, agent: 'mimo' })
+    expect(delayed.status).toBe(502)
+    expect((await delayed.json()).reason).toContain('delayed-failure')
     // Exercise the real Mac/Linux script with a fake tmux, not just its argv.
     const bin = join(root, 'bin')
     mkdirSync(bin)

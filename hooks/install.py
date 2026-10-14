@@ -4,6 +4,7 @@
     python3 hooks/install.py --dry-run    # show what would change, write nothing
     python3 hooks/install.py --uninstall  # remove PolyDaemon's entries only
     python3 hooks/install.py --self-check
+    python3 hooks/install.py --sidebar    # optional Claude terminal sidebar
     python3 hooks/install.py --codex      # the same hooks for Codex (~/.codex/hooks.json)
     python3 hooks/install.py --mcp        # register the plugin from ~/.config/polydaemon/machine.env
                                           # (see hooks/mcp_entry.py; --dry-run works here too)
@@ -260,6 +261,9 @@ def _self_check() -> None:
 
 if __name__ == "__main__":
     import mcp_entry
+    if "--sidebar" in sys.argv:
+        import claude_sidebar
+        sys.exit(claude_sidebar.main(REPO, sys.argv[1:]))
     if "--codex" in sys.argv and "--opencode" in sys.argv:
         print("select one agent: --codex or --opencode", file=sys.stderr)
         sys.exit(2)

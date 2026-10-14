@@ -18,6 +18,7 @@ vscode-extension/node_modules/
 vscode-extension/out/
 vscode-extension/*.vsix
 *.tsbuildinfo
+claude-mods/**/.claude-plugin/types/
 bun.lockb
 
 # --- VS Code dev host (caches, not source) ---

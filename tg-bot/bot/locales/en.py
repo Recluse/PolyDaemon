@@ -116,7 +116,7 @@ STRINGS: dict[str, str] = {
     "cb.launch_failed": "❌ Launch failed: {error}",
     "cb.launch_none_here": "✅ Everything on {machine} is already running (or has no launcher).",
     "cb.launch_pick": "🚀 Which workspace should I launch?",
-    "cb.launch_starting": "🚀 Launching <b>{name}</b> — the window takes ~15s to come up, a «🟢 Window appeared» announcement will arrive and the topic will come alive.",
+    "cb.launch_starting": "🚀 Launcher for <b>{name}</b> completed. Agent registration is not confirmed yet; a «🟢 Window appeared» announcement follows when it connects.",
     "cb.launch_starting_toast": "🚀 Launching {name}…",
     "cb.override_cleared": "✅ Override cleared",
     "cb.perm_bypass_confirm": "⚠️ Enable <b>Bypass permissions</b> for <b>{workspace}</b>?\n\nClaude will perform any action in this workspace WITHOUT asking for permission.",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -560,22 +561,31 @@ async def launch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # The cwd travels with the name: it is what picks the MACHINE, and two
         # machines can hold a folder of the same name.
         name, cwd = hit
-        try:
-            await launch_workspace(context, name, cwd, kind, new_session)
-        except Exception as exc:
-            logger.exception("launch failed for %r", name)
-            await query.answer(t("cb.launch_failed", error=exc), show_alert=True)
-            return
-        name = f"{name} · {AGENT_LABELS[kind]}"
-        await query.answer(t("cb.launch_starting_toast", name=name))
+        label = f"{name} · {AGENT_LABELS[kind]}"
+        await query.answer(t("cb.launch_starting_toast", name=label))
         try:
             await query.edit_message_text(
-                t("cb.launch_starting", name=name),
+                t("cb.launch_starting_toast", name=escape(label)),
                 parse_mode="HTML",
             )
         except Exception:
             pass
+        context.application.create_task(_launch_run(query, context, name, cwd, kind, new_session))
         return
+
+
+async def _launch_run(query, context, name, cwd, kind, new_session):
+    try:
+        await launch_workspace(context, name, cwd, kind, new_session)
+        text = t("cb.launch_starting", name=escape(f"{name} · {AGENT_LABELS[kind]}"))
+    except Exception as exc:
+        logger.exception("launch failed for %r", name)
+        text = t("cb.launch_failed", error=escape(str(exc)))
+    try:
+        await query.edit_message_text(text, parse_mode="HTML")
+    except Exception:
+        if query.message is not None:
+            await query.message.reply_text(text, parse_mode="HTML")
 
 
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

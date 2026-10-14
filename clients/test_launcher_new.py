@@ -32,7 +32,8 @@ class NewSessionTest(unittest.TestCase):
                 "from pathlib import Path\n"
                 "name=Path(sys.argv[0]).name\n"
                 "if name=='curl':\n"
-                " if any('/last-thread' in a for a in sys.argv): print('{\"thread_id\":\"saved\"}')\n"
+                " if os.environ.get('HTTP_FAIL'): sys.exit(7)\n"
+                " if any('/last-thread' in a for a in sys.argv): print(os.environ.get('THREAD_RESPONSE','{\"thread_id\": \"saved\"}'))\n"
                 "else: print(json.dumps({'args':sys.argv[1:],'cwd':os.getcwd(),"
                 "'fresh':os.environ.get('TG_'+os.environ['AGENT'].upper()+'_NEW','0')}))\n"
             )
@@ -60,10 +61,44 @@ class NewSessionTest(unittest.TestCase):
                             self.assertEqual("--continue" in call["args"], not fresh)
                         if agent == "codex":
                             self.assertEqual("resume" in call["args"], not fresh)
-                conflict = ["resume", "saved"] if agent == "codex" else ["--resume", "saved"] if agent == "claude" else ["--session", "ses_saved"]
-                rejected = subprocess.run(["bash", str(target), "new", *conflict], cwd=root,
-                                          env={**env, "AGENT": agent}, text=True, capture_output=True)
-                self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                for conflict in (['resume', 'saved'], ['--session=ses_saved'], ['--fork-session'], ['--resume', 'saved']):
+                    for selector in ('literal', 'environment'):
+                        rejected = subprocess.run(["bash", str(target), *(['new'] if selector == 'literal' else []), *conflict], cwd=root,
+                            env={**env, "AGENT": agent, f'TG_{agent.upper()}_NEW': '1' if selector == 'environment' else '0'},
+                            text=True, capture_output=True)
+                        self.assertEqual(rejected.returncode, 2, rejected.stderr)
+                result = subprocess.run(['bash', str(target), 'new', '--model', 'resume'],
+                    env={**env, 'AGENT': agent}, text=True, capture_output=True, check=True)
+                self.assertEqual(json.loads(result.stdout)['args'][-2:], ['--model', 'resume'])
+            for agent, args in (('codex', ['resume', 'explicit-thread']), ('claude', ['--resume', 'explicit-thread'])):
+                result = subprocess.run(['bash', str(workspace / f'polydaemon-{agent}.sh'), *args],
+                    env={**env, 'AGENT': agent}, text=True, capture_output=True, check=True)
+                actual = json.loads(result.stdout.splitlines()[-1])['args']
+                self.assertNotIn('saved', actual)
+                self.assertNotIn('--continue', actual)
+                self.assertEqual(actual[-2:], args)
+            for flag in ('-c', '-s'):
+                result = subprocess.run(['bash', str(workspace / 'polydaemon-codex.sh'), 'new', flag, 'fixture'],
+                    env={**env, 'AGENT': 'codex'}, text=True, capture_output=True, check=True)
+                self.assertEqual(json.loads(result.stdout)['args'][-2:], [flag, 'fixture'])
+            result = subprocess.run(['bash', str(workspace / 'polydaemon-codex.sh'), '-m', 'fixture', 'resume', 'explicit-thread'],
+                env={**env, 'AGENT': 'codex'}, text=True, capture_output=True, check=True)
+            self.assertNotIn('saved', json.loads(result.stdout)['args'])
+            result = subprocess.run(['bash', str(workspace / 'polydaemon-codex.sh'), '--version'],
+                env={**env, 'AGENT': 'codex', 'HTTP_FAIL': '1'}, text=True, capture_output=True, check=True)
+            self.assertEqual(json.loads(result.stdout)['args'], ['--cd', str(workspace), '--version'])
+            for response in ('not JSON', '{}', 'null', '{"thread_id":42}', '{"thread_id":"bad/path"}', '{"ok":false,"thread_id":null}'):
+                result = subprocess.run(['bash', str(workspace / 'polydaemon-codex.sh')],
+                    env={**env, 'AGENT': 'codex', 'THREAD_RESPONSE': response}, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('invalid last-thread response', result.stderr)
+            for response in ('{"thread_id":null}', '{"thread_id":""}'):
+                result = subprocess.run(['bash', str(workspace / 'polydaemon-codex.sh')],
+                    env={**env, 'AGENT': 'codex', 'THREAD_RESPONSE': response}, text=True, capture_output=True, check=True)
+                self.assertNotIn('resume', json.loads(result.stdout)['args'])
+            result = subprocess.run(['bash', str(workspace / 'polydaemon-codex.sh'), 'new'],
+                env={**env, 'AGENT': 'codex', 'TG_CODEX_CHECK_UPDATE': '0'}, text=True, capture_output=True, check=True)
+            self.assertIn('check_for_update_on_startup=false', json.loads(result.stdout)['args'])
             # A fresh Claude launch must not reattach an existing tmux session.
             result = subprocess.run(["bash", str(workspace / "polydaemon-claude.sh"), "new"],
                                     env={**env, "AGENT": "claude", "TG_TMUX": "1"},

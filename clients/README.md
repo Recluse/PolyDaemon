@@ -2,6 +2,8 @@
 
 PolyDaemon clients for machines running Claude Code, Codex, OpenCode or MiMo.
 See [launcher names and compatibility](../docs/naming.md).
+The optional [Claude terminal sidebar](../docs/claude-sidebar.md) also works in
+SSH/tmux consoles; installation is separate from the window launcher.
 
 All shell window launchers accept `new` as the first argument:
 
@@ -16,6 +18,20 @@ This starts a clean session without deleting previous history. Without `new`,
 the launcher keeps its usual resume behavior. Do not combine `new` with a
 resume/session selector. Existing window ownership checks still apply: close
 the current window before replacing it; `new` does not stop another agent.
+
+The same contract applies on macOS, Linux and Windows. An inherited
+`TG_<AGENT>_NEW=1` also means a fresh session and rejects conflicting session
+selectors. Explicit resume/fork selection disables automatic history selection.
+Codex `-c` (configuration) and `-s` (sandbox) are forwarded unchanged, including
+with `new`; they are not session selectors. Codex management commands and
+Claude help/version do not consult session history or require daemon health.
+A failed Codex last-thread lookup is an error, not permission to silently start
+a blank conversation.
+
+For centrally managed Codex installations only, `TG_CODEX_CHECK_UPDATE=0`
+adds a per-launch `check_for_update_on_startup=false` override to interactive
+launches. Without it, the CLI's normal update setting is retained. Folder trust
+and permission prompts are not automatically accepted by the Codex launcher.
 
 Windows has root `polydaemon-{claude,codex,opencode,mimo}.cmd` launchers;
 first argument `new` starts a clean session. See

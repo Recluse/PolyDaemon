@@ -52,11 +52,21 @@ The native MCP reply tool is the primary delivery path. If a Telegram turn
 finishes with plain text and no confirmed reply tool result, the launcher
 mirrors that final text. Tool approvals go through the existing bridge guard;
 an unavailable guard or non-allow result cancels execution. Native MiMo asks
-are forwarded as one-shot approvals, never persistent allow rules.
+for permissions are forwarded as one-shot approvals, never persistent allow rules.
 Transport failures and expired bridge requests are errors, not denial decisions.
 The adapter reports them without replying `reject` to a pending native ask;
 that ask remains available in the console. A lost acknowledgement of an allow
 also never causes a compensating reject. No command is authorized by an error.
+
+Native `question.asked` pickers are forwarded separately through `/ask-question`.
+Single/multiple choices and custom text retain their native settings; only a
+complete Telegram answer is submitted to MiMo. Duplicate in-flight events do
+not send another card. Answering or dismissing the question in the console
+stops the relay; late Telegram results are not submitted to that resolved question.
+Transport errors, timeouts and partial answers leave the native question pending
+and report a delivery problem, without choosing an answer or rejecting it.
+Already loaded plugins need a window relaunch to pick up this adapter change;
+questions opened before the change are not retroactively relayed.
 
 Native file reads/writes and glob/grep in `~/.local/share/mimocode/` do not
 require an additional PolyDaemon approval for MiMo in any workspace (logs,
@@ -80,8 +90,10 @@ produce a separate reply for each input.
 PolyDaemon shows the actual registered Telegram topic. HyperMnesia shows its
 native MCP connection and scoped `project_status` data: repository, indexed
 documents/chunks, freshness, changed/new/missing documents, map and check time.
-Unavailable data stays unknown rather than becoming zero or fresh. Polls are
-serial and refresh at most once per minute after a successful check.
+Unavailable data stays unknown rather than becoming zero or fresh. Bridge
+status refreshes every five seconds, independently of memory checks. Until
+the first topic binding arrives it shows `Waiting for Telegram topic`.
+Each poll is serial; successful memory checks refresh at most once per minute.
 
 Existing native MiMo `HyperMnesia`/`agentmem` configuration wins. When absent,
 the launcher can reuse the configured local HyperMnesia descriptor from

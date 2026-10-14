@@ -10,8 +10,35 @@ Run `polydaemon-claude new`, `polydaemon-codex new`, `polydaemon-opencode new`
 or `polydaemon-mimo new`. Only the first literal `new` is consumed; combining
 it with resume/continue/session/fork selection is rejected before any agent or
 daemon is started. Existing history is never deleted. Default Claude continues
-when its physical workspace has transcripts; default Codex retains the existing
-PowerShell launch behavior; OpenCode/MiMo retain their adapter resume behavior.
+when its physical workspace has transcripts; default Codex queries the daemon
+for the latest thread belonging to its physical workspace and resumes that ID.
+OpenCode/MiMo retain their adapter resume behavior. `TG_<AGENT>_NEW=1` has the
+same fresh-session and conflict checks as literal `new`. Explicit selection
+suppresses automatic continue/resume.
+
+Codex uses the HTTP port/auth from `~/.tg-bridge/agent.toml` and the WebSocket
+port from `TG_CODEX_WS_PORT` (default 3210). Missing/invalid last-thread payloads,
+HTTP failures and invalid IDs stop with an error; they never silently discard
+context. A null or empty `thread_id` permits a fresh session. Junctions in the
+workspace path resolve to the physical directory before lookup.
+
+Codex management commands (`--help`, `--version`, `mcp`, `exec`, etc.) bypass
+daemon/config readiness and automatic resume. Claude help/version likewise
+pass directly to its CLI without launcher-added flags. Native short options
+are preserved: Codex `-c` is config and `-s` is sandbox, so neither conflicts
+with `new`. Launcher controls are exact `-Workspace`, `-Agent`, `-Plan`,
+`-Check`; PowerShell parameter abbreviation is deliberately avoided.
+
+`TG_CODEX_CHECK_UPDATE=0` adds the session-only config override
+`check_for_update_on_startup=false` to interactive Codex launches. Without this
+opt-in, native configuration remains authoritative; management commands receive
+no update override. No global configuration is written.
+
+Claude receives matching `TG_WS_NAME`, `TG_BRIDGE_INSTANCE_NAME` and CLI name,
+plus the process-local `DISABLE_AUTOUPDATER=1`. Its auto-compact settings overlay
+is omitted with `TG_KEEP_AUTOCOMPACT=1` or explicit caller `--settings`.
+Bot launcher `-KeepAutoCompact` passes that opt-out only to the Claude child
+and restores the parent environment. Plans never write the settings overlay.
 
 The shared dispatcher sets the native OpenCode/MiMo fresh-session environment
 flag and calls the existing TypeScript adapter. Codex's internal PowerShell
@@ -49,8 +76,13 @@ deployment of the bot/common launch-agent is coordinated separately.
 
 The launch-ws suite runs by default under Windows PowerShell 5.1 using the
 HTTP caller's exact host flags: `-NoProfile -ExecutionPolicy Bypass -File`,
-positional name and explicit Dir/Agent/NewSession. Four tests passed there and
-four under PowerShell 7. The root cmd dispatch suite (four passed) exercises
+positional name and explicit Dir/Agent/NewSession. The suite also checks
+child-only compact opt-out and parent environment restoration. The root cmd
+dispatch suite exercises
 actual command stubs through cmd into PowerShell 7. Live GUI windows were not
 opened during acceptance checks. Set `POLYDAEMON_LAUNCH_HOST=pwsh.exe` to repeat
 the launch-ws suite under PowerShell 7.
+
+Extended native regressions use an authenticated loopback fixture and captured
+CLI argv for physical-cwd thread selection, fresh/explicit modes, HTTP/JSON
+failures, native option forwarding and management without daemon state.

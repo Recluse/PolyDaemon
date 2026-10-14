@@ -6,6 +6,94 @@ import { join } from 'node:path'
 import { availableModel, binding, finalReply, inboundPartID, inboundTurn, isInboundMessage, modelError, relayReplies } from './mimo-bridge.ts'
 import plugin from './mimo-plugin.ts'
 
+function fixtureEnv(home: string) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    !/^(TG_|CLAUDE|CODEX|MIMOCODE|TMUX)/.test(key)))
+  return { ...env, HOME: home, USERPROFILE: home }
+}
+
+test('MiMo native questions relay choices and text without inventing answers or blocking events', async () => {
+  const root = realpathSync(mkdtempSync(join(process.cwd(), '.mimo-test-')))
+  const saved = { ...process.env }
+  const spec = [
+    { question: 'Which VPN?', header: 'VPN', options: [{ label: 'Home', description: 'Router' }] },
+    { question: 'Where?', header: 'Host', options: [{ label: 'Ubuntu', description: '' }], multiple: true, custom: false },
+    { question: 'Name?', header: 'Name', options: [] },
+  ]
+  const request = { id: 'question-fixture', sessionID: 'ses_test', questions: spec }
+  const valid = { status: 'answered', answers: [
+    { kind: 'single', selectedLabels: ['Home'] },
+    { kind: 'multi', selectedLabels: ['Ubuntu'] },
+    { kind: 'custom', customText: 'my host' },
+  ] }
+  let pending = true, posts = 0, notices = 0, replies: any[] = [], body: any
+  let release: ((response: Response) => void) | undefined
+  const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname
+    if (path === '/question') return Response.json(pending ? [request] : [])
+    if (path.startsWith('/session/')) return Response.json({ directory: root })
+    if (path === '/ask-question') {
+      posts++
+      body = await req.json()
+      return new Promise<Response>(resolve => { release = resolve })
+    }
+    if (path === '/question/question-fixture/reply') replies.push(await req.json())
+    if (path === '/notify') notices++
+    return Response.json({})
+  } })
+  const until = async (condition: () => boolean) => {
+    for (let i = 0; i < 100 && !condition(); i++) await Bun.sleep(10)
+    expect(condition()).toBe(true)
+  }
+  try {
+    process.env = fixtureEnv(root)
+    Object.assign(process.env, { TG_MIMO_ROOT: root,
+      TG_WINDOW_UID: 'question-fixture', TG_BRIDGE_AGENT: 'mimo', TG_MIMO_BINDING: join(root, 'binding.json') })
+    writeFileSync(process.env.TG_MIMO_BINDING!, JSON.stringify({ root, sessionID: 'ses_test' }))
+    mkdirSync(join(root, '.tg-bridge-channel'))
+    writeFileSync(join(root, '.tg-bridge-channel/instances.json'), JSON.stringify({ fixture: {
+      cwd: root, instance_name: 'fixture-mimo', window_uid: 'question-fixture',
+      parent_pid: process.pid, pid: process.pid, heartbeat_at: Date.now() / 1000,
+      host: '127.0.0.1', port: server.port, auth_token: 'fixture',
+    } }))
+    for (const scenario of ['answered', 'timeout', 'partial', 'invalid', 'custom-disabled', 'offline', 'console', 'foreign']) {
+      pending = true; posts = 0; notices = 0; replies = []; release = undefined
+      const hooks = await plugin.server({ directory: root, serverUrl: server.url })
+      const event = { type: 'question.asked', properties: { ...request, sessionID: scenario === 'foreign' ? 'ses_other' : 'ses_test' } }
+      await hooks.event!({ event })
+      await hooks.event!({ event })
+      if (scenario === 'foreign') {
+        await Bun.sleep(50)
+        expect(posts).toBe(0)
+        expect(replies).toEqual([])
+        continue
+      }
+      await until(() => !!release && posts === 1)
+      expect(replies).toEqual([])
+      expect(body.questions.map((q: any) => [q.multiSelect, q.allowCustom])).toEqual([[false, true], [true, false], [false, true]])
+      if (scenario === 'console') {
+        pending = false
+        await hooks.event!({ event: { type: 'question.replied', properties: { requestID: request.id } } })
+      }
+      const result = structuredClone(valid)
+      if (scenario === 'timeout') result.status = 'timeout'
+      if (scenario === 'partial') result.answers.pop()
+      if (scenario === 'invalid') result.answers[0].selectedLabels = ['invented']
+      if (scenario === 'custom-disabled') result.answers[1] = { kind: 'custom', customText: 'not allowed' }
+      release!(scenario === 'offline' ? new Response('offline', { status: 503 }) : Response.json(result))
+      if (scenario === 'console') await Bun.sleep(50)
+      else await until(() => replies.length > 0 || notices > 0)
+      expect(replies).toEqual(scenario === 'answered' ? [{ answers: [['Home'], ['Ubuntu'], ['my host']] }] : [])
+      expect(notices).toBe(scenario === 'answered' || scenario === 'console' ? 0 : 1)
+      await Bun.sleep(20)
+    }
+  } finally {
+    server.stop(true)
+    process.env = saved
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('MiMo transport failures never submit a denial, including a lost allow acknowledgement', async () => {
   const root = realpathSync(mkdtempSync(join(process.cwd(), '.mimo-test-')))
   const saved = { ...process.env }
@@ -26,7 +114,8 @@ test('MiMo transport failures never submit a denial, including a lost allow ackn
     return Response.json({})
   } })
   try {
-    Object.assign(process.env, { HOME: root, USERPROFILE: root, TG_MIMO_ROOT: root,
+    process.env = fixtureEnv(root)
+    Object.assign(process.env, { TG_MIMO_ROOT: root,
       TG_WINDOW_UID: 'permission-fixture', TG_BRIDGE_AGENT: 'mimo', TG_MIMO_BINDING: join(root, 'binding.json') })
     writeFileSync(process.env.TG_MIMO_BINDING!, JSON.stringify({ root, sessionID: 'ses_test' }))
     mkdirSync(join(root, '.tg-bridge-channel'))
@@ -61,12 +150,12 @@ test('MiMo data grant covers all windows without project config and stays inside
   const home = realpathSync(mkdtempSync(join(process.cwd(), '.mimo-test-')))
   const root = join(home, '.local/share/mimocode')
   mkdirSync(root, { recursive: true })
-  symlinkSync(home, join(root, 'escape'), 'dir')
+  symlinkSync(home, join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
   const file = join(root, 'memory/sessions/ses_test/notes.md')
   const classify = (tool: string, args: any, agent = 'mimo') => {
     const result = spawnSync('node', ['hooks/tg-approve.js', '--classify'], {
       input: JSON.stringify(guardInput(tool, args, join(home, 'workspace'), agent)), encoding: 'utf8',
-      env: { ...process.env, HOME: home, TG_BRIDGE_AGENT: agent, CODEX_THREAD_ID: '', CLAUDE_PROJECT_DIR: '' },
+      env: { ...fixtureEnv(home), TG_BRIDGE_AGENT: agent },
     })
     expect(result.status).toBe(0)
     return JSON.parse(result.stdout)
@@ -143,6 +232,7 @@ test('MiMo keeps session scope, missing approvals closed, and reply dedup per in
   const root = realpathSync(mkdtempSync(join(process.cwd(), '.mimo-test-')))
   const saved = { ...process.env }
   try {
+    process.env = fixtureEnv(root)
     process.env.TG_MIMO_ROOT = root
     process.env.TG_MIMO_BINDING = join(root, 'binding.json')
     writeFileSync(process.env.TG_MIMO_BINDING, JSON.stringify({ root, sessionID: 'ses_test' }))

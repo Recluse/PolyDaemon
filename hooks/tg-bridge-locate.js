@@ -26,10 +26,12 @@ const HEARTBEAT_FRESH_SECONDS = 45;
 const LOCAL_REGISTRY_PATH = path.join(os.homedir(), ".tg-bridge-channel", "instances.json");
 const DB_PATH = path.join(os.homedir(), ".tg-copilot-bridge", "bot.db");
 
-// Comparison form of a path: lowercase + normalize separators so "C:/x" and
-// "C:\x" (and drive-letter case) agree.
+// Windows paths are case-insensitive; POSIX paths must retain their case.
 function cmpForm(p) {
-  return String(p || "").replace(/\//g, "\\").toLowerCase().replace(/\\+$/, "");
+  const value = String(p || "");
+  return process.platform === "win32"
+    ? value.replace(/\//g, "\\").toLowerCase().replace(/\\+$/, "")
+    : value.replace(/\/+$/, "");
 }
 
 function rowToTarget(row) {
@@ -72,8 +74,8 @@ function matchRow(rows, cwd, {
   const forms = rows.map((r) => [cmpForm(r.cwd), cmpForm(real(String(r.cwd || "")))]);
   let p = path.resolve(cwd || process.cwd());
   while (true) {
-    const want = cmpForm(p);
-    const hits = rows.filter((r, i) => forms[i].includes(want));
+    const wanted = [cmpForm(p), cmpForm(real(p))];
+    const hits = rows.filter((r, i) => wanted.some((want) => forms[i].includes(want)));
     if (hits.length) {
       return hits.find((r) => Number(r.parent_pid) === parentPid) || hits[0];
     }

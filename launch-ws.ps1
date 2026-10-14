@@ -147,7 +147,7 @@ if (Test-Path -LiteralPath $registryPath) {
 # settings untouched.
 $extraArgs = @()
 if ($NewSession) { $extraArgs += 'new' }
-if ($Agent -eq 'claude' -and -not $KeepAutoCompact) {
+if ($Agent -eq 'claude' -and -not $KeepAutoCompact -and $env:TG_KEEP_AUTOCOMPACT -cne '1') {
   $settingsPath = Join-Path $env:USERPROFILE '.tg-bridge-channel\launch-no-autocompact.json'
   try {
     $settingsDir = Split-Path $settingsPath -Parent
@@ -168,8 +168,14 @@ if ($Check) {
   [PSCustomObject]@{ agent=$Agent; workspace=$dir; launcher=$cmdPath; arguments=$extraArgs; nudge=($Agent -eq 'claude'); new_session=[bool]$NewSession; commandLine=$commandLine } | ConvertTo-Json -Depth 4
   return
 }
-$proc = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/d /s /k "' + $commandLine + '"') `
-  -WorkingDirectory $dir -WindowStyle Normal -PassThru
+$previousKeepAutoCompact = $env:TG_KEEP_AUTOCOMPACT
+try {
+  if ($Agent -eq 'claude' -and $KeepAutoCompact) { $env:TG_KEEP_AUTOCOMPACT = '1' }
+  $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/d /s /k "' + $commandLine + '"') `
+    -WorkingDirectory $dir -WindowStyle Normal -PassThru
+} finally {
+  if ($Agent -eq 'claude' -and $KeepAutoCompact) { $env:TG_KEEP_AUTOCOMPACT = $previousKeepAutoCompact }
+}
 Write-Output "launched '$($match.Name)' (pid $($proc.Id)) -> $cmdPath"
 
 # Nudge the TUI: once claude is up, inject Enters straight into the new

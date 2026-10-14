@@ -85,20 +85,30 @@ function safeDir(v: unknown): string {
   return absolute && d.length <= 1024 && !d.includes('\0') ? d : ''
 }
 
-function launch(name: string, dir: string, agent: string, fresh: boolean): void {
-  // Fire-and-forget. The launch script opens its OWN visible window (Windows:
-  // Start-Process + a TUI keystroke nudge; macOS: a .command handed to
-  // Terminal); windowsHide only hides this PowerShell host (mirrors
-  // launcher.py's CREATE_NO_WINDOW) and is ignored elsewhere. No detach — the
-  // child exits seconds after spawning the real window; launches are rare.
+function launch(name: string, dir: string, agent: string, fresh: boolean): Promise<void> {
+  // Wait for the launcher, not the agent window it opens. A successful spawn
+  // alone does not prove PowerShell accepted its arguments or opened a console.
   const [cmd, args] = IS_WINDOWS
     ? ['powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT, name,
         ...(dir ? ['-Dir', dir] : []), '-Agent', agent, ...(fresh ? ['-NewSession'] : [])]]
     : ['bash', [SCRIPT, name, dir, agent, fresh ? 'new' : 'resume']] as [string, string[]]
   // The script's own output goes to this agent's log: it is the only place that
   // says WHY a launch fell back to Terminal.app or found no workspace.
-  const child = spawn(cmd as string, args as string[], { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true })
-  child.on('error', (e) => console.error(`launch-agent: spawn failed for ${name}: ${e}`))
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd as string, args as string[], {
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 90000,
+    })
+    let output = ''
+    for (const stream of [child.stdout, child.stderr]) stream?.on('data', (chunk) => {
+      output = (output + chunk.toString()).slice(-2000)
+      process.stderr.write(chunk)
+    })
+    child.once('error', reject)
+    child.once('close', (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(`launcher ${signal || `exit ${code}`}: ${output.trim() || 'no output'}`))
+    })
+  })
 }
 
 // What this machine's checkout is at, for the bot's /versions. Read on request,
@@ -197,6 +207,7 @@ try {
   Bun.serve({
     hostname: BIND,
     port: PORT,
+    idleTimeout: 120,
     async fetch(req) {
       const url = new URL(req.url)
       if (req.method === 'GET' && url.pathname === '/health') {
@@ -247,7 +258,11 @@ try {
             && !(agent === 'claude' && !fresh && existsSync(resolve(dir, `tg-claude.${extension}`))))) {
           return Response.json({ ok: false, reason: 'selected launcher not installed in workspace' }, { status: 404 })
         }
-        launch(name, dir, agent, fresh)
+        try { await launch(name, dir, agent, fresh) }
+        catch (error) {
+          console.error(`launch-agent: launch failed for ${name}: ${error}`)
+          return Response.json({ ok: false, reason: String(error) }, { status: 502 })
+        }
         console.log(`launch-agent: launch ${name} agent=${agent} new=${fresh}${dir ? ` in ${dir}` : ''}`)
         return Response.json({ ok: true })
       }
@@ -269,7 +284,7 @@ try {
 // answers 200 and no window appears.
 if (!existsSync(SCRIPT)) {
   console.error(`launch-agent: launch script not found: ${SCRIPT} — /launch will answer `
-    + `200 and do nothing. Set TG_LAUNCH_SCRIPT or run from the repo checkout.`)
+    + `404. Set TG_LAUNCH_SCRIPT or run from the repo checkout.`)
 }
 console.log(`launch-agent: listening on ${BIND}:${PORT}, platform=${process.platform}, `
   + `runner=${IS_WINDOWS ? 'powershell' : 'bash'}, script=${SCRIPT}`)

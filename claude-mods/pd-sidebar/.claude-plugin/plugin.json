@@ -1,0 +1,6 @@
+{
+  "name": "pd-sidebar",
+  "version": "0.5.0",
+  "description": "PolyDaemon sidebar: model, context and limits, todos, changed files, live bridge windows",
+  "types": "./types/index.d.ts"
+}

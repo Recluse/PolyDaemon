@@ -37,6 +37,37 @@ export default { id: 'polydaemon.mimo', server: async (ctx: any) => {
     return result.decision === 'allow'
   }
   const approved = new Set<string>()
+  const questions = new Map<string, AbortController>()
+  async function relayQuestion(p: any, signal: AbortSignal) {
+    if (!await owns(p.sessionID)) return
+    const pending = async () => (await native('/question')).some((q: any) => q.id === p.id && q.sessionID === p.sessionID)
+    if (!await pending() || signal.aborted) return
+    const result = await bridgeRequest(cwd, '/ask-question', {
+      cwd,
+      questions: p.questions.map((q: any) => ({
+        question: q.question, header: q.header, options: q.options,
+        multiSelect: q.multiple === true, allowCustom: q.custom !== false,
+      })),
+    }, AbortSignal.any([signal, AbortSignal.timeout(86460000)]))
+    if (signal.aborted || !await pending()) return
+    if (result.status !== 'answered' || !Array.isArray(result.answers) || result.answers.length !== p.questions.length) {
+      throw new Error('No complete Telegram answer')
+    }
+    const answers = result.answers.map((answer: any, index: number) => {
+      const spec = p.questions[index]
+      if (answer.kind === 'custom' && spec.custom !== false && typeof answer.customText === 'string' && answer.customText.trim()) {
+        return [answer.customText]
+      }
+      const labels = answer.selectedLabels
+      if (answer.kind !== (spec.multiple === true ? 'multi' : 'single') || !Array.isArray(labels)
+        || (spec.multiple !== true && labels.length !== 1)
+        || labels.some((label: unknown) => typeof label !== 'string' || !spec.options.some((o: any) => o.label === label))) {
+        throw new Error('Invalid Telegram answer')
+      }
+      return labels
+    })
+    if (!signal.aborted) await native(`/question/${encodeURIComponent(p.id)}/reply`, { answers })
+  }
   return {
     config: async (config: any) => {
       if (!Object.keys(config.mcp ?? {}).some(name => /^(HyperMnesia|agentmem)$/i.test(name)) && process.env.TG_MIMO_MEMORY) {
@@ -86,6 +117,23 @@ export default { id: 'polydaemon.mimo', server: async (ctx: any) => {
     },
     'tool.execute.after': async (event: any) => { approved.delete(`${event.sessionID}:${event.callID}:${event.tool}`) },
     event: async ({ event }: any) => {
+      if (event.type === 'question.replied' || event.type === 'question.rejected') {
+        questions.get(event.properties.requestID)?.abort()
+        return
+      }
+      if (event.type === 'question.asked') {
+        const p = event.properties
+        if (questions.has(p.id)) return
+        const controller = new AbortController()
+        questions.set(p.id, controller)
+        // Waiting for a human must not block the native event bus.
+        void relayQuestion(p, controller.signal).catch(async () => {
+          if (controller.signal.aborted) return
+          await bridgeRequest(cwd, '/notify', { kind: 'api_error',
+            message: `MiMo: не удалось передать вопрос или подтвердить доставку ответа (${p.id}). Проверь вопрос в консоли; автоматический ответ не выбирался.` }).catch(() => {})
+        }).finally(() => { questions.delete(p.id) })
+        return
+      }
       if (event.type !== 'permission.asked') return
       const p = event.properties
       // Do not block the event bus while waiting for the human's callback.

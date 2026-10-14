@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite'
 import { join } from 'path'
 import { STATE_DIR } from './config.ts'
 import { log } from './logger.ts'
+import type { TopicMessage } from './prompt-reminders.ts'
 
 // ---------------------------------------------------------------------------
 // Local registry — ~/.tg-bridge-channel/instances.json
@@ -74,6 +75,18 @@ function writeAll(map: Record<string, LocalRow>): void {
 function pidAlive(pid: number): boolean {
   if (!pid || pid <= 1) return false
   try { process.kill(pid, 0); return true } catch (e: any) { return e?.code === 'EPERM' }
+}
+
+// Standalone/local-DB mode has no registry HTTP router. Notify local siblings
+// directly; each owner filters by the exact topic of its pending prompt.
+export async function notifyLocalTopic(event: TopicMessage): Promise<void> {
+  const rows = Object.values(readAll()).filter(row => row.pid !== process.pid
+    && row.heartbeat_at > Date.now() / 1000 - 60 && pidAlive(row.pid) && pidAlive(row.parent_pid)
+    && Number.isInteger(row.port) && row.port > 0 && row.port < 65536)
+  await Promise.allSettled(rows.map(row => fetch(`http://${row.host}:${row.port}/topic-activity`, {
+    method: 'POST', headers: { Authorization: `Bearer ${row.auth_token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(event), signal: AbortSignal.timeout(4000),
+  })))
 }
 
 // Drop entries from crashed sibling plugins on this device: heartbeat lapsed AND

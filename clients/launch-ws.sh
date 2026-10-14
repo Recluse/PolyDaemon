@@ -147,22 +147,35 @@ end run
 -- matched it. "Enter to confirm" is only on screen while something is actually
 -- pending, and that same session did not have it.
 --
--- Blind Enters (what the Windows launcher sends) are fine there because it
--- drives a console it just created. Here the session is also brand new, but that
--- is an assumption about the caller rather than something this handler can see,
--- so it does not rest on it.
+-- A new session does not imply that its TUI accepted an arrow key. Read back
+-- the cursor selection; a delay alone is not evidence that it moved.
 --
 -- Two prompts are handled because two were OBSERVED, both verified by hand on
 -- 2026-09-24:
---   "Yes, I trust this folder"              — second item, so ↓ then Enter
---   "I am using this for local development" — already selected, so Enter
+-- Confirm only a positively observed selection on two successive screens.
+-- Never assume that an arrow key was accepted by a still-starting TUI.
 -- The session-resume prompt mentioned in older notes is deliberately NOT here:
 -- it has not been seen, and guessing a keypress for a menu whose layout is
 -- unknown is how you resume the wrong session.
+on selectedStartupChoice(c, labelText)
+	set selectedCount to 0
+	set matchesChoice to false
+	repeat with screenLine in paragraphs of c
+		set lineText to screenLine as text
+		if lineText contains "❯" then
+			set selectedCount to selectedCount + 1
+			if lineText ends with labelText then set matchesChoice to true
+		end if
+	end repeat
+	return selectedCount is 1 and matchesChoice
+end selectedStartupChoice
+
 on nudge(sess)
 	tell application "iTerm"
 		set didTrust to false
 		set didChannels to false
+		set previousChoice to ""
+		set trustArrows to 0
 		-- 60 × 0.5 s. Long enough for a cold start, short enough that a window
 		-- stuck on something unknown is left alone rather than poked forever.
 		repeat 60 times
@@ -174,15 +187,32 @@ on nudge(sess)
 			-- match a prompt that was answered long ago and is merely still
 			-- scrolled back.
 			set pending to (c contains "Enter to confirm")
+			set choice to ""
 			if pending and (not didTrust) and (c contains "Yes, I trust this folder") then
-				write sess text ((ASCII character 27) & "[B") newline no
-				delay 0.3
-				write sess text "" newline yes
-				set didTrust to true
+				if my selectedStartupChoice(c, "Yes, I trust this folder") then
+					set choice to "trust"
+					if previousChoice is choice then
+						write sess text "" newline yes
+						set didTrust to true
+					end if
+				else if my selectedStartupChoice(c, "No, exit") then
+					if trustArrows is 3 then
+						log "Startup selection did not change; leaving the prompt for manual input"
+						exit repeat
+					end if
+					write sess text ((ASCII character 27) & "[B") newline no
+					set trustArrows to trustArrows + 1
+				end if
 			else if pending and (not didChannels) and (c contains "I am using this for local development") then
-				write sess text "" newline yes
-				set didChannels to true
+				if my selectedStartupChoice(c, "I am using this for local development") then
+					set choice to "channels"
+					if previousChoice is choice then
+						write sess text "" newline yes
+						set didChannels to true
+					end if
+				end if
 			end if
+			set previousChoice to choice
 		end repeat
 	end tell
 end nudge
@@ -191,18 +221,52 @@ APPLESCRIPT
 
 # Same screen-reading as the AppleScript `nudge` above — see there for which
 # prompts and why only while "Enter to confirm" is on screen.
+selected_startup_choice() {
+  local screen="$1" label="$2" line selected=0 matched=0
+  while IFS= read -r line; do
+    case "$line" in
+      *❯*)
+        selected=$((selected + 1))
+        [[ "$line" == *"$label" ]] && matched=1
+        ;;
+    esac
+  done <<< "$screen"
+  [ "$selected" = 1 ] && [ "$matched" = 1 ]
+}
+
 nudge_tmux() {
-  local t="=$1:" c did_trust=0 did_ch=0 i   # "=name:" = exactly this session, its active pane
+  local t="=$1:" c did_trust=0 did_ch=0 i choice previous="" trust_arrows=0
   for i in $(seq 60); do
     sleep 0.5
     c="$(tmux capture-pane -p -t "$t" 2>/dev/null)" || return 0   # session gone
     case "$c" in *"bypass permissions on"*) return 0 ;; esac
-    case "$c" in *"Enter to confirm"*) ;; *) continue ;; esac
+    case "$c" in *"Enter to confirm"*) ;; *) previous=""; continue ;; esac
+    choice=""
     if [ $did_trust = 0 ] && [[ "$c" == *"Yes, I trust this folder"* ]]; then
-      tmux send-keys -t "$t" Down; sleep 0.3; tmux send-keys -t "$t" Enter; did_trust=1
+      if selected_startup_choice "$c" 'Yes, I trust this folder'; then
+        choice=trust
+        if [ "$previous" = "$choice" ]; then
+          tmux send-keys -t "$t" Enter || return 0
+          did_trust=1
+        fi
+      elif selected_startup_choice "$c" 'No, exit'; then
+        if [ "$trust_arrows" = 3 ]; then
+          echo 'Startup selection did not change; leaving the prompt for manual input' >&2
+          return 0
+        fi
+        tmux send-keys -t "$t" Down || return 0
+        trust_arrows=$((trust_arrows + 1))
+      fi
     elif [ $did_ch = 0 ] && [[ "$c" == *"I am using this for local development"* ]]; then
-      tmux send-keys -t "$t" Enter; did_ch=1
+      if selected_startup_choice "$c" 'I am using this for local development'; then
+        choice=channels
+        if [ "$previous" = "$choice" ]; then
+          tmux send-keys -t "$t" Enter || return 0
+          did_ch=1
+        fi
+      fi
     fi
+    previous="$choice"
   done
 }
 
@@ -219,7 +283,10 @@ open_in_tmux() {
     return 1
   fi
   tmux new-session -d -s "$sess" -c "$DIR" "bash ./$SCRIPT$FRESH" || return 1
-  [ "$NUDGE" = 0 ] || nudge_tmux "$sess"
+  if [ "$NUDGE" != 0 ]; then
+    nudge_tmux "$sess"
+    tmux has-session -t "=$sess" 2>/dev/null || { echo "session $sess exited during startup" >&2; return 1; }
+  fi
   echo "launched '$NAME' in tmux session $sess -> $DIR"
 }
 

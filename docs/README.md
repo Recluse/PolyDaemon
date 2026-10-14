@@ -7,6 +7,7 @@ Start with the [README](../README.md) and [getting-started.md](getting-started.m
 - [multi-machine.md](multi-machine.md) — one bot, windows on several machines; the launch agent.
 - [platforms.md](platforms.md) — what works on Windows, macOS and Linux.
 - [codex.md](codex.md) — Codex windows, experimental.
+- [claude-sidebar.md](claude-sidebar.md) — optional Claude terminal pane for SSH and local consoles.
 - [companions.md](companions.md) — HyperMnesia (memory) and Serena (code navigation), optional.
 - [large-files.md](large-files.md) — files up to 2 GB through your own Bot API server.
 - [reference/configuration.md](reference/configuration.md) — every setting: `config.yaml`, the plugin's environment, MCP scopes, permission overrides, state files.
