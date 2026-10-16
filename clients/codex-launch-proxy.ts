@@ -10,17 +10,22 @@ export function contextUsage(value: any): ContextUsage | null {
 
 // Observe only replies to THIS CLI's requests, never a global thread/started event.
 export class LaunchBinding {
-  pending = new Map<string | number, number>()
+  pending = new Map<string | number, { sequence: number; previous: { thread: string | null; context: ContextUsage | null } }>()
   sequence = 0
   thread: string | null = null
+  context: ContextUsage | null = null
   constructor(readonly cwd: string, readonly publish: (thread: string | null, context?: ContextUsage | null) => void) {}
   client(raw: string) {
     try {
       const m = JSON.parse(raw)
       if (!['thread/start', 'thread/resume', 'thread/fork'].includes(m.method) || m.id == null) return
+      // The CLI also starts ephemeral background work on this same connection.
+      // Those requests do not represent navigation to another conversation.
+      if (m.params?.ephemeral === true) return
       if (this.pending.size >= 256) this.pending.clear()
-      this.pending.set(m.id, ++this.sequence)
+      this.pending.set(m.id, { sequence: ++this.sequence, previous: { thread: this.thread, context: this.context } })
       this.thread = null
+      this.context = null
       this.publish(null)
     } catch { /* observation must not modify transport */ }
   }
@@ -29,15 +34,22 @@ export class LaunchBinding {
       const m = JSON.parse(raw)
       if (m.method === 'thread/tokenUsage/updated') {
         if (this.thread && m.params?.threadId === this.thread) {
-          this.publish(this.thread, contextUsage(m.params.tokenUsage))
+          this.context = contextUsage(m.params.tokenUsage)
+          this.publish(this.thread, this.context)
         }
         return
       }
       if (m.method || !this.pending.has(m.id)) return
-      const sequence = this.pending.get(m.id)
+      const pending = this.pending.get(m.id)!
       this.pending.delete(m.id)
-      if (sequence !== this.sequence) return
+      if (pending.sequence !== this.sequence) return
       const t = m.result?.thread
+      if (t?.ephemeral === true || t?.parentThreadId != null) {
+        this.thread = pending.previous.thread
+        this.context = pending.previous.context
+        this.publish(this.thread, this.context)
+        return
+      }
       if (typeof t?.id !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(t.id)
           || realpathSync(t.cwd) !== realpathSync(this.cwd)) return
       this.thread = t.id

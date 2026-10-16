@@ -1,6 +1,30 @@
 import { expect, test } from 'bun:test'
 import { LaunchBinding, launchProxy, contextUsage } from './codex-launch-proxy.ts'
 
+test('ephemeral CLI work cannot steal the panel, its usage or a pending durable navigation', () => {
+  const output: any[] = [], cwd = process.cwd()
+  const b = new LaunchBinding(cwd, (id, context) => output.push({ id, context }))
+  const start = (id: number, ephemeral?: boolean) => b.client(JSON.stringify({ id, method: 'thread/start', params: { ephemeral } }))
+  const reply = (id: number, name: string, extra = {}) => b.server(JSON.stringify({ id, result: { thread: { id: name, cwd, ...extra } } }))
+  start(1); reply(1, 'main', { ephemeral: false })
+  b.server(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { threadId: 'main',
+    tokenUsage: { last: { totalTokens: 500 }, modelContextWindow: 1000 } } }))
+  const before = output.length
+  start(2, true); reply(2, 'background', { ephemeral: true })
+  b.server(JSON.stringify({ method: 'thread/tokenUsage/updated', params: { threadId: 'background',
+    tokenUsage: { last: { totalTokens: 900 }, modelContextWindow: 1000 } } }))
+  expect(output).toHaveLength(before)
+  expect(b.thread).toBe('main')
+  start(3); reply(3, 'unexpected-ephemeral', { ephemeral: true })
+  expect(output.at(-1)).toEqual({ id: 'main', context: { tokens: 500, window: 1000 } })
+  start(4); start(5, true); reply(5, 'background-2', { ephemeral: true }); reply(4, 'new-main')
+  expect(b.thread).toBe('new-main')
+  start(6); start(7); reply(7, 'latest-main'); reply(6, 'late-background', { ephemeral: true })
+  expect(b.thread).toBe('latest-main')
+  start(8); reply(8, 'child', { parentThreadId: 'latest-main' })
+  expect(b.thread).toBe('latest-main')
+})
+
 test('context observes only bound-thread last usage, never cumulative or foreign usage', () => {
   const output: any[] = []
   const b = new LaunchBinding(process.cwd(), (id, context) => output.push({ id, context }))

@@ -132,7 +132,8 @@ export class CodexSidebar {
   }
   async root() {
     const { thread } = await this.rpc.call('thread/read', { threadId: this.threadID })
-    if (thread?.id !== this.threadID || !sameRoot(thread.cwd, this.cwd)) throw new Error('Thread scope mismatch')
+    if (thread?.id !== this.threadID || !sameRoot(thread.cwd, this.cwd)
+        || thread.ephemeral === true || thread.parentThreadId != null) throw new Error('Thread scope mismatch')
     return thread
   }
   async session() {

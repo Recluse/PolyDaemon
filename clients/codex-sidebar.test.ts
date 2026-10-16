@@ -23,6 +23,21 @@ test('current Git branch is read even when thread gitInfo is missing; detached a
 })
 
 const cwd = process.cwd()
+test('session reads current model each time and rejects an ephemeral or child main binding', async () => {
+  let model = 'first-model', ephemeral = false, parentThreadId: string | null = null
+  const reader = new CodexSidebar({ call: async method => {
+    if (method === 'thread/read') return { thread: { id: 'main', cwd, model, ephemeral, parentThreadId, status: { type: 'idle' } } }
+    if (method === 'thread/list') return { data: [] }
+    throw Error('unexpected')
+  } }, 'main', cwd)
+  expect((await reader.session()).model).toBe('first-model')
+  model = 'selected-model'
+  expect((await reader.session()).model).toBe('selected-model')
+  ephemeral = true
+  await expect(reader.session()).rejects.toThrow('Thread scope mismatch')
+  ephemeral = false; parentThreadId = 'parent'
+  await expect(reader.session()).rejects.toThrow('Thread scope mismatch')
+})
 test('unrelated hanging MCP discovery is never requested by either status poll', async () => {
   const calls: any[] = []
   const reader = new CodexSidebar({ call: async (method, p) => {

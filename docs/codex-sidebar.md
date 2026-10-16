@@ -26,6 +26,9 @@ CLI and its original server. It forwards frames without changing requests,
 responses, permissions or configuration. Only replies to that CLI's
 `thread/start`, `thread/resume` and `thread/fork` bind the panel; global events,
 other workspaces, failed replies and superseded requests cannot bind it.
+Ephemeral background threads created by the CLI do not change the binding;
+responses identifying a temporary thread or a child agent are excluded too.
+The reader independently rejects those threads as a main conversation.
 The panel still makes its read requests directly to the original app-server.
 Its private binding file is cleared during a session transition/disconnect.
 The relay does not resume or reconnect the CLI on its behalf.
