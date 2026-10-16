@@ -69,6 +69,7 @@ declare module 'claude-code' {
       agentsRunning: number
       files: ChangedFile[]
       snapshot: Snapshot | null
+      sessionError: boolean
       bridge: BridgeStatus | null
       memory: MemoryStatus | null
       agentList: AgentRow[] | null

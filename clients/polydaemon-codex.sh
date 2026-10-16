@@ -62,9 +62,30 @@ fi
 UPDATE=""
 [ "${TG_CODEX_CHECK_UPDATE:-}" != 0 ] || UPDATE="check_for_update_on_startup=false"
 if [ -n "$UPDATE" ]; then set -- -c "$UPDATE" "$@"; fi
+launch_codex() {
+  # Management/non-interactive calls never allocate a terminal or a sidebar.
+  if [ "${TG_CODEX_SIDEBAR:-auto}" != 0 ] && { [ -t 0 ] && [ -t 1 ] || [ "${TG_CODEX_SIDEBAR:-auto}" = 1 ]; }; then
+    REPO="${TG_BRIDGE_REPO:-}"
+    if [ -z "$REPO" ]; then
+      if [ -f ./clients/codex-console.py ]; then REPO="$(pwd -P)"
+      elif [ -f ./codex-console.py ]; then REPO="$(cd .. && pwd -P)"
+      elif [ -f "$HOME/.config/polydaemon/repo-path" ]; then
+        IFS= read -r REPO < "$HOME/.config/polydaemon/repo-path" || [ -n "$REPO" ]
+      fi
+    fi
+    if [ -f "$REPO/clients/codex-console.py" ] && command -v tmux >/dev/null 2>&1 \
+        && command -v bun >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 \
+        && python3 -c 'import curses' >/dev/null 2>&1; then
+      exec python3 "$REPO/clients/codex-console.py" codex "$@"
+    fi
+    echo 'polydaemon-codex: sidebar needs tmux, Bun, Python curses and a current PolyDaemon checkout' >&2
+    [ "${TG_CODEX_SIDEBAR:-auto}" != 1 ] || exit 1
+  fi
+  exec codex "$@"
+}
 if [ -n "$RESUME_ID" ]; then
   echo "polydaemon-codex: continuing thread ${RESUME_ID}"
-  exec codex --remote "$WS" resume "$RESUME_ID" --cd "$(pwd -P)" "$@"
+  launch_codex --remote "$WS" resume "$RESUME_ID" --cd "$(pwd -P)" "$@"
 else
-  exec codex --remote "$WS" --cd "$(pwd -P)" "$@"
+  launch_codex --remote "$WS" --cd "$(pwd -P)" "$@"
 fi

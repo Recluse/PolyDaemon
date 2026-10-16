@@ -2,15 +2,21 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-function fixture(on: On, memory = false) {
+function fixture(on: On, memory = false, initiallyVisible = true) {
   const clock = mock.clock(on)
-  let visible = true
+  let visible = initiallyVisible
   let cwd = '/w'
+  let sessionGate: Promise<void> | undefined
+  let usageCalls = 0
   on('session.start', () => ({ cwd: '/w' }))
   on('command.register', () => ({ value: { command: 'sidebar' } }))
   on('session.cwd', () => ({ value: cwd }))
   on('session.model', () => ({ value: 'fixture' }))
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1000 }, rateLimits: [] } }))
+  on('session.usage', async () => {
+    usageCalls++
+    await sessionGate
+    return { value: { startedAt: 0, context: { window: 1000 }, rateLimits: [] } }
+  })
   on('session.repo', () => ({ value: null }))
   on('env.get', () => ({ value: undefined }))
   on('fs.exists', () => ({ value: false }))
@@ -24,7 +30,8 @@ function fixture(on: On, memory = false) {
     { id: 'pd-sidebar', isShown: true }, { id: 'pd-agent', isShown: true },
   ] as never : [] }))
   on('agent.list', () => ({ value: [{ id: 'a1', description: 'Inspect parser', type: 'Explore', status: 'running' as const }] }))
-  return { clock, hide: () => { visible = false }, move: () => { cwd = '/other' } }
+  return { clock, hide: () => { visible = false }, show: () => { visible = true }, move: () => { cwd = '/other' },
+    gateSession: (gate?: Promise<void>) => { sessionGate = gate }, usageCalls: () => usageCalls }
 }
 
 test('a closed viewer rejects an in-flight transcript', async ($, on) => {
@@ -51,6 +58,88 @@ const memoryStatus = () => ({ version: 1, root: '/w', repo: 'w', checked_at: '20
   documents: { indexed: 2 }, chunks: { indexed: 3 },
   freshness: { state: 'fresh', checked_at: '2026-10-13T12:00:00Z', stale: 0, unindexed: 0, missing: 0, reason: null },
   map: { state: 'available', components: 1, checked_at: '2026-10-13T12:00:00Z' } })
+
+test('first visible render starts missing sources without waiting for a timer', async ($, on) => {
+  const f = fixture(on, true, false)
+  let calls = 0
+  on('mcp.call', async () => {
+    calls++
+    await f.clock.sleep(100)
+    return { value: { content: [], isError: false, structuredContent: memoryStatus() } }
+  })
+  await start($)
+  await f.clock.settle()
+  expect(calls).toBe(0)
+  const sidebar = await $.ui.mount({ plugin: 'pd-sidebar', surface: 'terminal', component: 'Pane',
+    requestId: 'pd-sidebar', props: { bodyColumns: 50 } as never })
+  await f.clock.settle()
+  expect(calls).toBe(0)
+  f.show()
+  await sidebar.redraw()
+  await f.clock.settle()
+  expect(calls).toBe(1)
+  await sidebar.redraw()
+  await f.clock.settle()
+  expect(calls).toBe(1)
+  await f.clock.advance(100)
+  expect(await sidebar.find({ type: 'Text', text: /fresh/ })).toBeTruthy()
+  expect(await sidebar.find({ type: 'Text', text: 'fixture' })).toBeTruthy()
+  expect(await sidebar.find({ type: 'Text', text: /status helper not installed/ })).toBeTruthy()
+})
+
+test('memory deadline unlocks polling and rejects the expired response', async ($, on) => {
+  const f = fixture(on, true)
+  let calls = 0
+  let release!: () => void
+  const hanging = new Promise<void>(resolve => { release = resolve })
+  on('mcp.call', async () => {
+    const call = ++calls
+    if (call === 1) await hanging
+    return { value: { content: [], isError: false, structuredContent: {
+      ...memoryStatus(), documents: { indexed: call === 1 ? 999 : 2 },
+    } } }
+  })
+  await start($)
+  await f.clock.settle()
+  const sidebar = await $.ui.mount({ plugin: 'pd-sidebar', surface: 'terminal', component: 'Pane',
+    requestId: 'pd-sidebar', props: { bodyColumns: 50 } as never })
+  await f.clock.advance(15000)
+  expect(calls).toBe(1)
+  expect(await sidebar.find({ type: 'Text', text: /status unavailable/ })).toBeTruthy()
+  await sidebar.redraw()
+  await f.clock.settle()
+  expect(calls).toBe(1)
+  await f.clock.advance(45000)
+  expect(calls).toBe(2)
+  expect(await sidebar.find({ type: 'Text', text: /2 docs/ })).toBeTruthy()
+  release()
+  await f.clock.settle()
+  expect(await sidebar.find({ type: 'Text', text: /999 docs/ })).toBeFalsy()
+  expect(await sidebar.find({ type: 'Text', text: /2 docs/ })).toBeTruthy()
+})
+
+test('session deadline is unavailable rather than loading and allows a later retry', async ($, on) => {
+  const f = fixture(on)
+  let release!: () => void
+  f.gateSession(new Promise<void>(resolve => { release = resolve }))
+  await start($)
+  await f.clock.settle()
+  const sidebar = await $.ui.mount({ plugin: 'pd-sidebar', surface: 'terminal', component: 'Pane',
+    requestId: 'pd-sidebar', props: { bodyColumns: 50 } as never })
+  await f.clock.advance(8000)
+  expect(f.usageCalls()).toBe(1)
+  expect(await sidebar.find({ type: 'Text', text: 'Session status unavailable' })).toBeTruthy()
+  await sidebar.redraw()
+  await f.clock.settle()
+  expect(f.usageCalls()).toBe(1)
+  f.gateSession()
+  await f.clock.advance(2000)
+  expect(f.usageCalls()).toBe(2)
+  expect(await sidebar.find({ type: 'Text', text: 'fixture' })).toBeTruthy()
+  release()
+  await f.clock.settle()
+  expect(await sidebar.find({ type: 'Text', text: 'Session status unavailable' })).toBeFalsy()
+})
 
 test('memory failure clears fresh, and an in-flight old cwd never publishes', async ($, on) => {
   const f = fixture(on, true)

@@ -82,6 +82,16 @@ shows it live.
    `TG_CODEX_NEW=1 ./polydaemon-codex.sh` explicitly starts a new conversation without
    looking up a resume ID; existing history is not removed.
 
+## Optional terminal sidebar
+
+The [read-only Codex companion](codex-sidebar.md) shows account limits,
+PolyDaemon/HyperMnesia status and direct child agents, with a transcript viewer.
+Interactive shell launches show it in a 44-column tmux pane in the same console
+when dependencies are available, including over SSH. The launcher observes its
+own CLI's thread selection; it does not guess the newest session. Set
+`TG_CODEX_SIDEBAR=0` for the plain CLI. Manual companion launches require an
+explicit thread ID. Codex itself is not patched.
+
 ## Limits
 
 The daemon forwards app-server `error` and failed `turn/completed` notifications

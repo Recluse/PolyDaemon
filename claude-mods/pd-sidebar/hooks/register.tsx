@@ -21,6 +21,7 @@ const tasks = atom({ plugin: 'pd-sidebar', key: 'tasks' } as const, [] as Sessio
 const agentsRunning = atom({ plugin: 'pd-sidebar', key: 'agentsRunning' } as const, 0)
 const files = atom({ plugin: 'pd-sidebar', key: 'files' } as const, [] as ChangedFile[])
 const snapshot = atom({ plugin: 'pd-sidebar', key: 'snapshot' } as const, null as Snapshot | null)
+const sessionError = atom({ plugin: 'pd-sidebar', key: 'sessionError' } as const, false)
 const bridge = atom({ plugin: 'pd-sidebar', key: 'bridge' } as const, null as BridgeStatus | null)
 const memory = atom({ plugin: 'pd-sidebar', key: 'memory' } as const, null as MemoryStatus | null)
 const agentList = atom({ plugin: 'pd-sidebar', key: 'agentList' } as const, null as AgentRow[] | null)
@@ -30,12 +31,16 @@ const agentView = atom({ plugin: 'pd-sidebar', key: 'agentView' } as const, null
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
 
 type Source = 'session' | 'bridge' | 'memory'
+type Poll = { source: Source; epoch: number; active: boolean }
+const POLL_TIMEOUT: Record<Source, number> = { session: 8000, bridge: 10000, memory: 15000 }
 
 // A poll that is still running is not started again (clock.every does not wait
 // for an async callback), and an answer that lands after the pane closed or the
 // cwd moved belongs to an older epoch and is dropped. Module state: a reload
 // starts both over, as it drops the timers too.
 const inFlight: Record<Source, boolean> = { session: false, bridge: false, memory: false }
+const latestPoll: Partial<Record<Source, Poll>> = {}
+const attemptedEpoch: Record<Source, number> = { session: -1, bridge: -1, memory: -1 }
 let epoch = 0
 let epochCwd = ''
 let viewerEpoch = 0
@@ -117,6 +122,7 @@ async function currentEpoch($: EngineInterface): Promise<number> {
     viewerEpoch++
     agentPage = 0
     await update($, snapshot, () => null)
+    await update($, sessionError, () => false)
     await update($, bridge, () => null)
     await update($, memory, () => null)
     await update($, agentList, () => null)
@@ -125,11 +131,12 @@ async function currentEpoch($: EngineInterface): Promise<number> {
   return epoch
 }
 
-async function mayPublish($: EngineInterface, started: number): Promise<boolean> {
-  return started === await currentEpoch($) && await paneShown($) && started === epoch
+async function mayPublish($: EngineInterface, started: Poll, failed = false): Promise<boolean> {
+  const current = () => (started.active || failed) && latestPoll[started.source] === started && started.epoch === epoch
+  return current() && started.epoch === await currentEpoch($) && await paneShown($) && current()
 }
 
-async function refreshSession($: EngineInterface, started: number): Promise<void> {
+async function refreshSession($: EngineInterface, started: Poll): Promise<void> {
   const [model, cwd, usage, now, tools] = await Promise.all([
     $.session.model(),
     $.session.cwd(),
@@ -163,6 +170,7 @@ async function refreshSession($: EngineInterface, started: number): Promise<void
     updatedAt: now,
   }
   if (await mayPublish($, started)) {
+    await update($, sessionError, () => false)
     await update($, snapshot, () => next)
     await update($, agentList, () => agents)
   }
@@ -175,7 +183,7 @@ function bridgeFailed(error: string, now: number): BridgeStatus {
 // PolyDaemon's bundled helper reads this window's own bridge (GET /status and
 // /tasks, its own scope only) and prints JSON without the token. The mod keeps
 // no bridge client of its own.
-async function refreshBridge($: EngineInterface, started: number): Promise<void> {
+async function refreshBridge($: EngineInterface, started: Poll): Promise<void> {
   const now = await $.clock.now()
   const helper = `${$.plugin.root}/${HELPER}`
   let next: BridgeStatus
@@ -213,7 +221,7 @@ function memoryUnknown(error: string, now: number): MemoryStatus {
 
 // The one connected MCP server that serves `project_status`, asked over the
 // engine's own connection; its answer must be for this cwd, or it is unknown.
-async function refreshMemory($: EngineInterface, started: number): Promise<void> {
+async function refreshMemory($: EngineInterface, started: Poll): Promise<void> {
   const [now, cwd, tools] = await Promise.all([$.clock.now(), $.session.cwd(), $.tool.list()])
   const servers = tools.flatMap(t => {
     const m = t.mcp ? STATUS_TOOL.exec(t.name) : null
@@ -240,28 +248,54 @@ async function refreshMemory($: EngineInterface, started: number): Promise<void>
   if (await mayPublish($, started)) await update($, memory, () => next)
 }
 
-async function poll($: EngineInterface, source: Source): Promise<void> {
-  if (inFlight[source]) return
+async function pollFailure($: EngineInterface, started: Poll): Promise<void> {
+  const now = await $.clock.now()
+  if (!(await mayPublish($, started, true))) return
+  if (started.source === 'memory') await update($, memory, () => memoryUnknown('status unavailable', now))
+  else if (started.source === 'bridge') await update($, bridge, () => bridgeFailed('status unavailable', now))
+  else {
+    await update($, sessionError, () => true)
+    await update($, snapshot, () => null)
+    await update($, agentList, () => null)
+  }
+}
+
+async function poll($: EngineInterface, source: Source, initial = false): Promise<void> {
+  if (inFlight[source] || (initial && attemptedEpoch[source] === epoch)) return
   inFlight[source] = true
-  let started = epoch
-  try {
-    if (!(await paneShown($))) return
-    started = await currentEpoch($)
+  const started: Poll = { source, epoch, active: true }
+  latestPoll[source] = started
+  let hidden = false
+  let finish!: (ok: boolean) => void
+  const deadline = new Promise<boolean>(resolve => { finish = resolve })
+  const timer = $.clock.after(POLL_TIMEOUT[source], () => {
+    started.active = false
+    finish(false)
+  })
+  const work = async () => {
+    hidden = !(await paneShown($))
+    if (hidden || !started.active) return
+    started.epoch = await currentEpoch($)
+    if (!started.active) return
+    attemptedEpoch[source] = started.epoch
     if (source === 'session') await refreshSession($, started)
     else if (source === 'bridge') await refreshBridge($, started)
     else await refreshMemory($, started)
-  } catch {
-    if (await mayPublish($, started)) {
-      const now = await $.clock.now()
-      if (source === 'memory') await update($, memory, () => memoryUnknown('status unavailable', now))
-      else if (source === 'bridge') await update($, bridge, () => bridgeFailed('status unavailable', now))
-      else {
-        await update($, snapshot, () => null)
-        await update($, agentList, () => null)
-      }
-    }
+  }
+  try {
+    const ok = await Promise.race([work().then(() => true, () => false), deadline])
+    started.active = false
+    if (!ok) void pollFailure($, started).catch(() => undefined)
   } finally {
+    timer.cancel()
+    started.active = false
     inFlight[source] = false
+    // A hidden or superseded attempt must not consume the next visible bootstrap.
+    const shown = await paneShown($)
+    if (!shown || hidden || started.epoch !== epoch) {
+      attemptedEpoch[source] = -1
+      if (shown) $.ui.invalidate('ui.render')
+    }
   }
 }
 
@@ -400,6 +434,7 @@ export const register: Register = on => {
     await update($, files, () => [])
     await update($, agentsRunning, () => 0)
     await update($, snapshot, () => null)
+    await update($, sessionError, () => false)
     await update($, bridge, () => null)
     await update($, memory, () => null)
     return next(e)
@@ -464,6 +499,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const snap = await read($, snapshot)
+    const sessionFailed = await read($, sessionError)
     const todoList = await read($, todos)
     const taskList = await read($, tasks)
     const agents = await read($, agentsRunning)
@@ -472,6 +508,11 @@ export const register: Register = on => {
     const changed = await read($, files)
     const own = await read($, bridge)
     const mem = await read($, memory)
+    // Placement may happen after session.start (including narrow terminals).
+    // Bootstrap once per epoch; failures retry on the normal timer, not on repaint.
+    if (snap === null && !sessionFailed) void poll($, 'session', true).catch(() => undefined)
+    if (own === null) void poll($, 'bridge', true).catch(() => undefined)
+    if (mem === null) void poll($, 'memory', true).catch(() => undefined)
     const cwd = snap?.cwd ?? ''
 
     const heading = (label: string) => (
@@ -491,7 +532,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {heading('Session')}
         {snap === null ? (
-          <Text dimColor>loading…</Text>
+          <Text dimColor>{sessionFailed ? 'Session status unavailable' : 'loading…'}</Text>
         ) : (
           <Box flexDirection="column">
             <Text wrap="truncate-end">{snap.model}</Text>

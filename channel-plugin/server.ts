@@ -17,7 +17,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprot
 import { InputFile } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
 import { randomBytes, timingSafeEqual } from 'crypto'
-import { statSync, mkdirSync, writeFileSync, readdirSync, rmSync, existsSync, readFileSync } from 'fs'
+import { statSync, mkdirSync, writeFileSync, readdirSync, rmSync, existsSync, readFileSync, realpathSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { homedir } from 'os'
 
@@ -366,6 +366,12 @@ const mcp = new Server(
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
+      name: 'bridge_status',
+      description: 'Read this MCP connection\'s PolyDaemon topic, pending request counts and cross-window tasks. No messages are consumed or sent; no approvals are resolved.',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
       name: 'reply',
       description:
         'Send a message to Telegram. Pass chat_id from the inbound channel metadata or readable Telegram JSON footer. ' +
@@ -563,6 +569,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
   try {
     switch (req.params.name) {
+      case 'bridge_status': {
+        if (Object.keys(args).length) throw new Error('bridge_status takes no arguments')
+        const topic = myTopicBinding()
+        const tasks = await myTasksRemote()
+        const data = {
+          version: 1, root: realpathSync(process.cwd()), instance: INSTANCE_NAME,
+          state: 'connected', working: activeProgress !== null,
+          topic: topic ? { id: topic.message_thread_id, title: topic.title || INSTANCE_NAME } : null,
+          pending: { approvals: pendingApprovals.size, questions: pendingAskQuestions.size, plans: pendingPlans.size },
+          tasks: tasks.ok ? { state: 'available', items: tasks.tasks.map(t => ({
+            id: t.id, from: t.from, kind: t.kind, text: t.text, state: t.state,
+          })) } : { state: 'unavailable', items: null },
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent: data, isError: false }
+      }
       case 'reply': {
         const chat_id = args.chat_id as string
         const text = args.text as string

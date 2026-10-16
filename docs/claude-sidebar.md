@@ -34,6 +34,17 @@ Closing the viewer or changing its selected agent invalidates in-flight reads.
 Memory status requires versioned, scoped values; missing counts stay unknown.
 Failed refreshes do not retain a previous `fresh` result as a current reading.
 
+The first visible render starts missing status reads immediately, even when the
+pane was not placed during session startup. Repaints coalesce with in-flight
+reads; hidden panes do not start polls. Subsequent refreshes run every 5 seconds
+for session/bridge state and every 60 seconds for memory.
+
+Poll deadlines are 8 seconds for session state, 10 seconds for the bridge and
+15 seconds for memory. A deadline displays unavailable/unknown and releases
+the polling slot so the next scheduled refresh can retry. Expired replies
+cannot overwrite a newer reading. The deadline does not claim to cancel the
+underlying MCP operation; the native call API has no cancellation argument.
+
 The sidebar does not approve operations, drain incoming messages, change task
 states, start language servers, or run model turns. Closing or reloading the
 pane must not replay an agent tool.

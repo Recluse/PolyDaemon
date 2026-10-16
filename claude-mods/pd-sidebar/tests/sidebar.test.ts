@@ -1,10 +1,15 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
 
 import type { Engine, Mounted } from 'claude-code/testing'
 
 // The kit's $ has no state noun: what the mod kept is read off its own pane.
 // One mounted pane per test: it redraws as the mod's state changes.
 const mounted = new WeakMap<Engine, Promise<Mounted<'terminal', 'Pane'>>>()
+function renderOnly(on: On) {
+  mock.clock(on)
+  on('ui.panes', () => ({ value: [] }))
+}
 const pane = ($: Engine) => {
   let found = mounted.get($)
   if (!found) {
@@ -21,6 +26,7 @@ const todoList = [
 ]
 
 test('TodoWrite runs once and its list lands in state', async ($, on) => {
+  renderOnly(on)
   let calls = 0
   on('tool.call', { tool: 'TodoWrite' }, () => {
     calls++
@@ -33,6 +39,7 @@ test('TodoWrite runs once and its list lands in state', async ($, on) => {
 })
 
 test('a failed state write never runs the tool again', async ($, on) => {
+  renderOnly(on)
   let calls = 0
   on('tool.call', { tool: 'TodoWrite' }, () => {
     calls++
@@ -47,6 +54,7 @@ test('a failed state write never runs the tool again', async ($, on) => {
 })
 
 test('edits are counted per file; failed edits are not', async ($, on) => {
+  renderOnly(on)
   let fail = false
   on('tool.call', { tool: 'Edit' }, () => (fail ? { result: 'no match' as never, isError: true } : { result: {} as never }))
   const edit = (id: string) =>
@@ -61,6 +69,7 @@ test('edits are counted per file; failed edits are not', async ($, on) => {
 })
 
 test('session tasks follow TaskCreate and TaskUpdate results', async ($, on) => {
+  renderOnly(on)
   on('tool.call', { tool: 'TaskCreate' }, () => ({ result: { task: { id: '7', subject: 'Ship it' } } as never }))
   on('tool.call', { tool: 'TaskUpdate' }, ($, e) => ({
     result: { success: e.taskId === '7', taskId: e.taskId, updatedFields: ['status'] } as never,
@@ -77,6 +86,7 @@ test('session tasks follow TaskCreate and TaskUpdate results', async ($, on) => 
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`the pane draws every section on ${surface}`, async ($, on) => {
+    renderOnly(on)
     on('tool.call', { tool: 'TodoWrite' }, () => ({ result: { oldTodos: [], newTodos: todoList } as never }))
     await $.tool.call({ tool: 'TodoWrite', tool_use_id: 'r1', todos: todoList })
     const pane = await $.ui.mount({
