@@ -40,7 +40,6 @@ import {
 import { lastChatId, lastUserId, setMyPort, setLastSession } from './src/state.ts'
 import { htmlEscape, ensureWorkspaceHeader, resolveTextFormat, markdownToTelegramHtml } from './src/markdown.ts'
 import {
-  registerInstance,
   unregisterInstance,
   heartbeatInstance,
   PARENT_CMD,
@@ -972,8 +971,12 @@ async function deliverReply(
 // topic, so a Codex window never collides with the Claude window of the
 // same workspace.
 mcp.oninitialized = () => {
-  if (isQueuedClient()) return
+  if (isQueuedClient()) {
+    startWindowRegistration()
+    return
+  }
   if (isClaudeClient()) {
+    startWindowRegistration()
     if (CHANNELS_ENABLED) apiErrorTimer = setInterval(() => { void pollApiError(); void checkStuck() }, API_ERROR_POLL_MS)
     return
   }
@@ -984,13 +987,21 @@ mcp.oninitialized = () => {
     // tool still works (it carries an explicit chat_id), and the daemon owns
     // per-workspace codex topic registration.
     log('PolyDaemon: codex shared app-server (rootless) — not registering as a window')
-    unregisterInstance()
     return
   }
   const name = `${basename(cwd)}-codex`
   setNameOverride(name)
-  reRegister()
+  startWindowRegistration()
   log(`PolyDaemon: codex host detected — renamed to ${name}`)
+}
+
+function startWindowRegistration(): void {
+  if (!CHANNELS_ENABLED || heartbeatTimer || shuttingDown) return
+  reRegister()
+  // A heartbeat can re-register a missing row, so it must wait for the same
+  // handshake gate as the first registration (including rootless clients).
+  setTimeout(() => { if (!shuttingDown) heartbeatInstance() }, 3000)
+  heartbeatTimer = setInterval(heartbeatInstance, HEARTBEAT_INTERVAL_MS)
 }
 
 // ---------------------------------------------------------------------------
@@ -2336,15 +2347,8 @@ process.on('SIGHUP', shutdown)
 if (CHANNELS_ENABLED) {
   const port = await startHttpServer()
   setMyPort(port)
-  registerInstance(port)
-  // Eager heartbeat shortly after registering: in remote mode this is how we pull
-  // our forum-topic binding from the bot (see heartbeatRemote). A RELAUNCHED
-  // window's topic already exists, so this makes its replies thread into its own
-  // topic from the first message instead of landing in General until the first
-  // 15s interval. Delayed a beat so /register has landed on the bot (else 404 →
-  // re-register, no binding this round; the interval still catches up).
-  setTimeout(heartbeatInstance, 3000)
-  heartbeatTimer = setInterval(heartbeatInstance, HEARTBEAT_INTERVAL_MS)
+  // Listen before MCP initialization, but do not advertise an unknown client
+  // as Claude. oninitialized publishes the final agent identity and heartbeats.
   sweepInbox()  // once at startup, then hourly
   inboxJanitorTimer = setInterval(sweepInbox, INBOX_SWEEP_INTERVAL_MS)
   log(`PolyDaemon: HTTP listening on ${BIND_HOST}:${port} (instance: ${INSTANCE_NAME})`)

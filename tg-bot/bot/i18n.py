@@ -157,6 +157,10 @@ if __name__ == "__main__":  # self-check: python3 tg-bot/bot/i18n.py
     assert not problems, f"{len(problems)} locale problem(s)"
 
     _load()
+    for lang, table in _tables.items():
+        for key in ("common.no_windows", "common.no_windows_available",
+                    "cmd.start_greeting", "watch.bot_started"):
+            assert "claude" not in table[key].lower(), f"{lang}:{key} must cover every agent"
     # A key present everywhere formats normally.
     assert t("common.no_windows"), "expected some text"
     # An unknown key degrades to the key itself rather than raising.

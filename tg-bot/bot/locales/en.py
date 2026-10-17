@@ -36,8 +36,8 @@ STRINGS: dict[str, str] = {
     "common.bad_callback": "⚠️ Invalid callback.",
     "common.failed_reason": "❌ Failed: {reason}",
     "common.launch_all_running": "✅ Every registered workspace is already running (or has no PolyDaemon Claude launcher).",
-    "common.no_windows": "🚫 No Claude Code windows registered.",
-    "common.no_windows_available": "🚫 No Claude Code windows available.",
+    "common.no_windows": "🚫 No agent windows registered.",
+    "common.no_windows_available": "🚫 No agent windows available.",
     "common.unknown_action": "⚠️ Unknown action.",
     "common.window_not_found": "🚫 Window not found.",
     "common.window_unavailable": "window unavailable",
@@ -67,7 +67,7 @@ STRINGS: dict[str, str] = {
     "cmd.error": "❌ Error: {error}",
     "cmd.help": "👋 /start — greeting\n❓ /help — command list\n🧹 /clear — reset the Claude Code context (soft: \"forget the history\")\n🗜 /compact — compact the window's context (the real /compact; cures \"Prompt is too long\")\n📊 /status — status of the registered windows\n👥 /who — who else is in this folder and what they are editing\n🪟 /window — pick the active Claude Code window\n🚀 /launch — launch a workspace that is not running\n🧠 /effort — effort level of the active window (low/medium/high/xhigh/max/ultracode)\n🧠 /model — switch the window's model (buttons Opus 4.8 1M / Sonnet 5 / Fable 5; or /model opus[1m])\n🧮 /context — how much context the window is using (estimated from the transcript)\n🚪 /exit — close the window (runs /exit in claude; the session comes back via /launch)\n🔄 /restart — restart the window (/exit + /launch; resumes the session, handy for updating the plugin)\n🔄 /restart all — restart every idle window (to roll out an update)\n🔄 /restart stale — restart only the idle windows still on older code\n🏷 /versions — which code each machine and window runs, and whose hooks are stale\n⚙️ /settings — settings (permissions, default window)",
     "cmd.pick_window": "📊 Pick a window — I'll show what it is busy with:",
-    "cmd.start_greeting": "👋 Hi. Send a message and it goes to the active Claude Code window.",
+    "cmd.start_greeting": "👋 Hi. Send a message and it goes to the active agent window.",
     "cmd.tasks_header": "📋 <b>Open between windows: {count}</b>",
     "cmd.tasks_legend": "⏳ — waiting for an answer · ⛔ — blocked, needs a decision",
     "cmd.tasks_none": "✅ Nothing open between windows.",
@@ -189,7 +189,7 @@ STRINGS: dict[str, str] = {
 
     # --- Registry and disk watch ---------------------------------------------------
     "watch.active_window": "➡️ Active window: {display}",
-    "watch.bot_started": "🤖 Bot started. Open Claude Code windows:",
+    "watch.bot_started": "🤖 Bot started. Open agent windows:",
     "watch.low_disk": "⚠️ <b>Low disk space on the bot server</b>\nHost: <code>{host}</code>\nChecked path: <code>{path}</code>\nFree: <b>{free_gb:.1f} GiB</b> of {total_gb:.1f} GiB (threshold {threshold_gb:.0f} GiB).\n\nThe bot may stop writing its database and logs. Free up space on this server; workspace disks are not checked here.",
     "watch.window_appeared": "🟢 Window appeared: {display}",
     "watch.window_disconnected": "🔴 Window disconnected: {display}",

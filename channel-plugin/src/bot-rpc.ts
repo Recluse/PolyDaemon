@@ -45,8 +45,8 @@ async function rpc(
   }
 }
 
-// The startup row must land before the MCP handshake rename; unregister must
-// land last. Concurrent requests can otherwise restore the old identity.
+// Registration/re-registration writes stay ordered, and unregister lands last.
+// Concurrent requests must not restore a removed row or an older identity.
 let registryWrites = Promise.resolve()
 function registryRpc(path: string, body: unknown) {
   const result = registryWrites.then(() => rpc(path, body))

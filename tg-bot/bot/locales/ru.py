@@ -33,8 +33,8 @@ STRINGS: dict[str, str] = {
     "common.bad_callback": "⚠️ Некорректный колбэк.",
     "common.failed_reason": "❌ Не вышло: {reason}",
     "common.launch_all_running": "✅ Все зарегистрированные воркспейсы уже запущены (или у них нет лаунчера PolyDaemon для Claude).",
-    "common.no_windows": "🚫 Нет зарегистрированных окон Claude Code.",
-    "common.no_windows_available": "🚫 Нет доступных окон Claude Code.",
+    "common.no_windows": "🚫 Нет зарегистрированных окон агентов.",
+    "common.no_windows_available": "🚫 Нет доступных окон агентов.",
     "common.unknown_action": "⚠️ Неизвестное действие.",
     "common.window_not_found": "🚫 Окно не найдено.",
     "common.window_unavailable": "окно недоступно",
@@ -64,7 +64,7 @@ STRINGS: dict[str, str] = {
     "cmd.error": "❌ Ошибка: {error}",
     "cmd.help": "👋 /start — приветствие\n❓ /help — список команд\n🧹 /clear — сбросить контекст Claude Code (мягкий: «забудь историю»)\n🗜 /compact — сжать контекст окна (реальный /compact; лечит «Prompt is too long»)\n📊 /status — статус зарегистрированных окон\n👥 /who — кто ещё работает в этой же папке и что правит\n🪟 /window — выбрать активное окно Claude Code\n🚀 /launch — запустить незапущенный воркспейс\n🧠 /effort — уровень усилий активного окна (low/medium/high/xhigh/max/ultracode)\n🧠 /model — сменить модель окна (кнопки Opus 4.8 1M / Sonnet 5 / Fable 5; или /model opus[1m])\n🧮 /context — сколько контекста занято у окна (оценка по транскрипту)\n🚪 /exit — закрыть окно (выполнит /exit в claude; сессия поднимается через /launch)\n🔄 /restart — перезапустить окно (/exit + /launch; резюмит сессию, удобно для обновления плагина)\n🔄 /restart all — перезапустить все простаивающие окна (раскатить обновление)\n🔄 /restart stale — перезапустить только свободные окна на старом коде\n🏷 /versions — какой код на машинах и в окнах, где хуки устарели\n⚙️ /settings — настройки (разрешения, дефолтное окно)",
     "cmd.pick_window": "📊 Выбери окно — покажу, чем оно сейчас занято:",
-    "cmd.start_greeting": "👋 Привет. Отправь сообщение, и оно уйдёт в активное окно Claude Code.",
+    "cmd.start_greeting": "👋 Привет. Отправь сообщение, и оно уйдёт в активное окно агента.",
     "cmd.tasks_header": "📋 <b>Открыто между окнами: {count}</b>",
     "cmd.tasks_legend": "⏳ — ждёт ответа · ⛔ — заблокировано, нужно решение",
     "cmd.tasks_none": "✅ Между окнами ничего не висит.",
@@ -184,7 +184,7 @@ STRINGS: dict[str, str] = {
 
     # --- Registry and disk watch ---------------------------------------------------
     "watch.active_window": "➡️ Активное окно: {display}",
-    "watch.bot_started": "🤖 Бот запущен. Открытые окна Claude Code:",
+    "watch.bot_started": "🤖 Бот запущен. Открытые окна агентов:",
     "watch.low_disk": "⚠️ <b>Мало места на диске сервера бота</b>\nХост: <code>{host}</code>\nПроверяемый путь: <code>{path}</code>\nСвободно: <b>{free_gb:.1f} ГиБ</b> из {total_gb:.1f} ГиБ (порог {threshold_gb:.0f} ГиБ).\n\nЗапись БД и журналов бота может остановиться. Нужна очистка диска этого сервера; диски рабочих окон здесь не проверяются.",
     "watch.window_appeared": "🟢 Окно появилось: {display}",
     "watch.window_disconnected": "🔴 Окно отключилось: {display}",
