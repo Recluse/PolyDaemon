@@ -80,20 +80,24 @@ CREATE TABLE IF NOT EXISTS tasks (
     blocker      TEXT
 );
 
--- Windows the idle compactor has given up on. IN THE DATABASE, unlike the rest
--- of that job's bookkeeping, because giving up is the one part that must outlive
--- a restart: the bot says "I have stopped trying" and then CI redeploys it an
--- hour later, the in-memory flag goes, and the same window is poked again with
--- the same note. Observed 2026-09-24 — gave up at 07:03, container restarted at
--- 10:00, tried again at 13:02.
---
--- `used` is the context size at the moment we gave up. Kept so the verdict can
--- EXPIRE: when it changes at all, the window has had a new turn since, and the
--- old conclusion says nothing about it (compact_watch.giveup_expired).
+-- Legacy data retained for compatibility. The compactor no longer uses token
+-- changes as activity; compact_topics below is its durable retry gate.
 CREATE TABLE IF NOT EXISTS compact_giveups (
     window_key TEXT PRIMARY KEY,
     used       INTEGER NOT NULL,
     at         REAL NOT NULL
+);
+
+-- One automatic attempt per observed topic-activity epoch. No observed message
+-- means no attempt: old databases cannot prove a previous dispatch absent.
+CREATE TABLE IF NOT EXISTS compact_topics (
+    chat_id             INTEGER NOT NULL,
+    thread_id           INTEGER NOT NULL,
+    activity_message_id INTEGER NOT NULL,
+    activity_at         REAL NOT NULL,
+    attempt_message_id  INTEGER NOT NULL DEFAULT 0,
+    attempted_at        REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (chat_id, thread_id)
 );
 """
 
@@ -219,7 +223,43 @@ class Storage:
                 (icon_emoji, str(workspace_id)),
             )
 
-    # --- idle compaction give-ups ------------------------------------------
+    # --- idle compaction activity and attempts -----------------------------
+
+    def record_compact_activity(self, chat_id: int, thread_id: int, message_id: int) -> None:
+        """Record only a newly observed ordinary topic message, never an edit."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO compact_topics(chat_id, thread_id, activity_message_id, activity_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(chat_id, thread_id) DO UPDATE SET "
+                "activity_message_id=excluded.activity_message_id, activity_at=excluded.activity_at "
+                "WHERE excluded.activity_message_id > compact_topics.activity_message_id",
+                (int(chat_id), int(thread_id), int(message_id), time.time()),
+            )
+
+    def compact_ready(self, chat_id: int, thread_id: int, idle_seconds: float) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM compact_topics WHERE chat_id=? AND thread_id=? "
+                "AND activity_message_id > attempt_message_id AND activity_at <= ?",
+                (int(chat_id), int(thread_id), time.time() - idle_seconds),
+            ).fetchone()
+        return row is not None
+
+    def claim_compact_attempt(self, chat_id: int, thread_id: int, idle_seconds: float) -> bool:
+        """Consume activity BEFORE dispatch; ambiguous delivery must not retry.
+
+        A single conditional write prevents duplicate jobs/processes from
+        dispatching together. Activity during /context closes the idle gate.
+        """
+        now = time.time()
+        with self._lock:
+            result = self._conn.execute(
+                "UPDATE compact_topics SET attempt_message_id=activity_message_id, attempted_at=? "
+                "WHERE chat_id=? AND thread_id=? AND activity_message_id > attempt_message_id "
+                "AND activity_at <= ?",
+                (now, int(chat_id), int(thread_id), now - idle_seconds),
+            )
+        return result.rowcount == 1
 
     def compact_giveups(self) -> dict[str, int]:
         """{window key: context size when we gave up on it}."""

@@ -34,8 +34,9 @@ Launchers use `polydaemon-<agent>`. Some integration IDs retain the former
   bot over your own network.
 - **Two windows, one file.** A window about to edit a file another window on the
   same machine is editing gets warned first; `/who` shows who is working where.
-- **Idle compaction.** A window left idle with a large context is compacted once,
-  and left alone if that does not help — until it has had new activity.
+- **Idle compaction.** An idle Claude window with a large context gets at most
+  one automatic `/compact` attempt per new topic activity. The guard survives
+  restarts; token changes and the compaction notice cannot re-arm it.
 - **Files up to 2 GB, both ways.** A window can send you a build, an installer or
   a video — up to 1990 MB each with your own Bot API server, where the cloud API
   stops at 50 MB — and files you send it arrive without a size limit.

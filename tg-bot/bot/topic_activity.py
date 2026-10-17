@@ -45,6 +45,11 @@ class TopicActivity:
         self.seen[key] = None
         if len(self.seen) > 4096:
             self.seen.popitem(last=False)
+        try:
+            self.storage.record_compact_activity(*key)
+        except Exception:
+            # Failed persistence cannot re-arm compaction; reminders still flow.
+            logger.warning('topic activity persistence failed; automatic compaction not re-armed')
         job = asyncio.create_task(self._deliver(dict(event)))
         self.jobs.add(job)
         job.add_done_callback(self.jobs.discard)
@@ -81,7 +86,8 @@ class TopicMessageObserver(BaseRateLimiter):
     async def process_request(self, callback, args, kwargs, endpoint, data, rate_limit_args):
         result = await callback(*args, **kwargs)
         try:
-            if (endpoint.startswith('send') or endpoint in ('copyMessage', 'forwardMessage')) and not is_prompt(data.get('reply_markup')):
+            excluded = isinstance(rate_limit_args, dict) and rate_limit_args.get('topic_activity') is False
+            if not excluded and (endpoint.startswith('send') or endpoint in ('copyMessage', 'forwardMessage')) and not is_prompt(data.get('reply_markup')):
                 for message in result if isinstance(result, list) else [result]:
                     if isinstance(message, dict):
                         self.activity.note({

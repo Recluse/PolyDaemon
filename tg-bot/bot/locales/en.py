@@ -200,7 +200,6 @@ STRINGS: dict[str, str] = {
     "status.recovered": "✅ <b>{name}</b> — back to normal.\n{page}",
 
     # --- Idle compaction -----------------------------------------------------------
-    "compact.gave_up": "🗜 Automatic compaction does not help this window: still ~{tokens}k tokens after a /compact, so I have stopped trying. Claude refuses when there are too few turns to merge, however large they are.",
     "compact.note_sent": "🗜 Sent an automatic context compaction: ~{tokens}k tokens, window silent for {hours:.1f}h.",
 
     # --- Slash-command injection ---------------------------------------------------

@@ -47,6 +47,8 @@ class TopicActivityTests(unittest.IsolatedAsyncioTestCase):
                     [InlineKeyboardButton('Allow', callback_data=f'approve:{n}:once')]]))
             await bot.edit_message_text('Changed', chat_id=-100123, message_id=11)
             await bot.send_message(-100123, 'Custom reply request', message_thread_id=42, reply_markup=ForceReply())
+            await bot.send_message(-100123, 'Compaction sent', message_thread_id=42,
+                                   rate_limit_args={'topic_activity': False})
             self.assertEqual(activity.note.call_count, 0)
             await bot.send_message(-100123, 'Normal', message_thread_id=42)
             self.assertEqual(activity.note.call_count, 1)
@@ -57,7 +59,8 @@ class TopicActivityTests(unittest.IsolatedAsyncioTestCase):
     async def test_scope_duplicates_siblings_and_no_registry_mutation(self):
         targets = [RuntimeInstance('w', 'w', 'w', '127.0.0.1', p, 'fixture', '/work/own') for p in (3100, 3101)]
         targets.append(RuntimeInstance('x', 'x', 'x', '127.0.0.1', 3102, 'fixture', '/work/other'))
-        storage = SimpleNamespace(get_topic=Mock(side_effect=lambda cwd: (-100123, 42 if cwd == '/work/own' else 99)))
+        storage = SimpleNamespace(get_topic=Mock(side_effect=lambda cwd: (-100123, 42 if cwd == '/work/own' else 99)),
+                                  record_compact_activity=Mock())
         client = SimpleNamespace(post_topic_activity=AsyncMock())
         activity = TopicActivity({}, storage, client)
         event = {'chat_id': -100123, 'message_thread_id': 42, 'message_id': 2}
@@ -65,9 +68,36 @@ class TopicActivityTests(unittest.IsolatedAsyncioTestCase):
             activity.note(event); activity.note(event)
             await asyncio.gather(*activity.jobs)
         self.assertEqual([c.args[0].port for c in client.post_topic_activity.call_args_list], [3100, 3101])
+        storage.record_compact_activity.assert_called_once_with(-100123, 42, 2)
         await activity.close()
         self.assertFalse(valid_event({**event, 'message_id': True}))
         self.assertFalse(valid_event({**event, 'message_thread_id': None}))
+
+    async def test_real_storage_compaction_notice_and_prompts_do_not_rearm(self):
+        scratch = Path(__file__).resolve().parent.parent / 'tmp'
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as home:
+            storage = Storage(Path(home) / 'bot.db')
+            activity = TopicActivity({}, storage, SimpleNamespace(post_topic_activity=AsyncMock()))
+            try:
+                with patch('bot.topic_activity.load_runtime_instances', return_value=[]), \
+                     patch('bot.storage.time.time', return_value=10000) as clock:
+                    async with ExtBot('123:fixture', request=FakeTelegram(), rate_limiter=TopicMessageObserver(activity)) as bot:
+                        await bot.send_message(-100123, 'Normal', message_thread_id=42)
+                        clock.return_value += 7200
+                        self.assertTrue(storage.claim_compact_attempt(-100123, 42, 7200))
+                        await bot.send_message(-100123, 'Compaction sent', message_thread_id=42,
+                                               rate_limit_args={'topic_activity': False})
+                        await bot.send_message(-100123, 'Request', message_thread_id=42, reply_markup=ForceReply())
+                        clock.return_value += 86400
+                        self.assertFalse(storage.compact_ready(-100123, 42, 7200))
+                        await bot.send_message(-100123, 'New work', message_thread_id=42)
+                        self.assertFalse(storage.compact_ready(-100123, 42, 7200))
+                        clock.return_value += 7200
+                        self.assertTrue(storage.claim_compact_attempt(-100123, 42, 7200))
+            finally:
+                await activity.close()
+                storage.close()
 
     async def test_incoming_new_only_and_observation_failure_keeps_success(self):
         activity = SimpleNamespace(note=Mock())
