@@ -437,7 +437,7 @@ if (autonomy && !sensitive) {
 // Newer claude versions include permission_mode in the hook input; absent/older
 // versions just fall through to the override check below.
 const sessionMode = String(input.permission_mode || "");
-if (!sensitive && !PERMISSION_REQUEST && sessionMode === "bypassPermissions") {
+if (!sensitive && sessionMode === "bypassPermissions") {
   reply("allow", "claude session is in bypassPermissions mode");
   return;
 }
@@ -468,7 +468,7 @@ if (target) {
   overrideMode = up.mode;
 }
 
-if (!sensitive && !PERMISSION_REQUEST && isBypass(overrideMode)) {
+if (!sensitive && isBypass(overrideMode)) {
   reply("allow", `workspace '${workspaceName}' is in bypass mode`);
   return;
 }
