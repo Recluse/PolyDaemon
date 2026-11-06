@@ -2,6 +2,8 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { join, resolve } from 'path'
 import { spawnSync } from 'child_process'
+import { hostname } from 'os'
+import { htmlEscape } from './markdown.ts'
 import { formatApprovalContext } from './permissions.ts'
 
 test('approval context follows the execution worktree and handles unborn/detached/unavailable Git', () => {
@@ -22,15 +24,19 @@ test('approval context follows the execution worktree and handles unborn/detache
   }
   try {
     git('init', '-b', 'feature/with&scope')
-    const expected = 'Repository: <code>repository &amp; one</code>\nBranch: <code>feature/with&amp;scope</code>'
+    const expected = 'Repository: <code>repository &amp; one</code>\nBranch: <code>feature/with&amp;scope</code>\n' +
+      `Host: <code>${htmlEscape(hostname())}</code>\nWorking directory: <code>${htmlEscape(nested)}</code>\nGit root: <code>${htmlEscape(repo)}</code>`
     expect(formatApprovalContext({}, nested)).toBe(expected)
     expect(formatApprovalContext({ workdir: 'repository & one/nested' }, home)).toBe(expected)
     expect(formatApprovalContext({ cwd: nested }, home)).toBe(expected)
+    expect(formatApprovalContext({ workdir: nested }, process.cwd(), true)).toBe(expected)
+    expect(formatApprovalContext({}, repo, true)).toBe(
+      `Host: <code>${htmlEscape(hostname())}</code>\nWorking directory: not supplied\nRepository: unavailable\nBranch: unavailable`)
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
       '-c', 'commit.gpgSign=false', '-c', `core.hooksPath=${noHooks}`, 'commit', '--allow-empty', '-m', 'fixture')
     git('checkout', '--detach')
     expect(formatApprovalContext({}, nested)).toContain(`Branch: <code>detached HEAD (${git('rev-parse', '--short', 'HEAD')})</code>`)
-    expect(formatApprovalContext({}, join(home, 'missing'))).toBe(
+    expect(formatApprovalContext({}, join(home, 'missing'))).toContain(
       'Repository: <code>unavailable</code>\nBranch: <code>unavailable</code>')
   } finally {
     rmSync(home, { recursive: true, force: true })

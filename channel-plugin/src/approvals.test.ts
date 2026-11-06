@@ -153,7 +153,7 @@ test('approval waits for an explicit decision; fast taps work and bad callbacks 
           return response.json()
         })()
         : await (async () => {
-          const response = await client.callTool({ name: 'approve_action', arguments: { tool_name: 'fixture' } })
+          const response = await client.callTool({ name: 'approve_action', arguments: { tool_name: 'fixture', cwd: workspace } })
           expect(response.isError === true).toBe(phase === 'failure')
           return JSON.parse(response.content[0].text)
         })()

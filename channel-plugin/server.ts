@@ -450,7 +450,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           tool_name: { type: 'string' },
-          tool_input: { type: 'object' },
+          tool_input: { type: 'object', description: 'Actual tool arguments, including workdir/cwd when available.' },
+          cwd: { type: 'string', description: 'Actual execution working directory, not the window workspace.' },
           prompt: { type: 'string' },
         },
       },
@@ -771,7 +772,8 @@ async function callTool(req: any) {
         // JSON dump here, so two divergent UIs depending on which approval path
         // Claude took. Single source of truth = formatToolSummary().
         const summary = formatToolSummary(toolName, toolInput)
-        const context = formatApprovalContext(toolInput)
+        const contextInput = toolInput && typeof toolInput === 'object' ? toolInput : {}
+        const context = formatApprovalContext({ cwd: args.cwd, ...contextInput }, process.cwd(), true)
         const messageText = `${agentLabel()} wants to run:\n\n${context}\n\n${summary}\n${promptText ? `\n<i>${htmlEscape(promptText)}</i>\n` : ''}\nAllow?`
         const keyboard = {
           inline_keyboard: [[

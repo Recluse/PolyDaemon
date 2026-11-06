@@ -1,5 +1,5 @@
 import { readFileSync, statSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
+import { homedir, hostname } from 'os'
 import { basename, join, resolve, posix as pathPosix } from 'path'
 import { spawnSync } from 'child_process'
 import {
@@ -101,9 +101,13 @@ export function formatToolSummary(toolName: string, toolInput: unknown): string 
   return `<b>${htmlEscape(toolName)}</b>\n<pre>${htmlEscape(raw.slice(0, 800))}${raw.length > 800 ? '…' : ''}</pre>`
 }
 
-export function formatApprovalContext(toolInput: unknown, cwd = process.cwd()): string {
+export function formatApprovalContext(toolInput: unknown, cwd = process.cwd(), requireExplicitDirectory = false): string {
   const inp = toolInput && typeof toolInput === 'object' ? toolInput as Record<string, unknown> : {}
   const workdir = [inp.workdir, inp.cwd].find(p => typeof p === 'string' && p.trim())
+  const host = `Host: <code>${htmlEscape(hostname())}</code>`
+  if (requireExplicitDirectory && typeof workdir !== 'string') {
+    return `${host}\nWorking directory: not supplied\nRepository: unavailable\nBranch: unavailable`
+  }
   // ponytail: execution cwd only; do not evaluate arbitrary shell targets or variables.
   const directory = typeof workdir === 'string' ? resolve(cwd, workdir) : cwd
   const git = (...args: string[]) => {
@@ -121,7 +125,9 @@ export function formatApprovalContext(toolInput: unknown, cwd = process.cwd()): 
     if (sha) branch = `detached HEAD (${sha})`
   }
   return `Repository: <code>${htmlEscape(root ? basename(root) : 'unavailable')}</code>\n` +
-    `Branch: <code>${htmlEscape(branch || 'unavailable')}</code>`
+    `Branch: <code>${htmlEscape(branch || 'unavailable')}</code>\n` +
+    `${host}\nWorking directory: <code>${htmlEscape(directory)}</code>\n` +
+    `Git root: <code>${htmlEscape(root || 'unavailable')}</code>`
 }
 
 export function buildAllowRule(toolName: string, toolInput: unknown): string {
