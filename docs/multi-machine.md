@@ -20,6 +20,9 @@ Telegram ◄─────► │ router bot · registry :8090      │
 On one machine the plugins find the bot through a shared database on disk. Across
 machines they can't, so the bot runs a small **registry** over HTTP: each plugin
 registers there, says which address it listens on, and the bot dials it back.
+When one bot host is not enough, run a second one beside it —
+[ha-failover.md](ha-failover.md) covers the primary/reserve pair (operator-promoted,
+not automatic) and how clients follow a switchover.
 
 ## Before you start: the network
 
@@ -80,6 +83,12 @@ services:
 volumes:
   tg-bridge-state: {}
 ```
+
+This is a **standalone** single-host service: it sets none of the
+`POLYDAEMON_*` activation variables and restarts on its own. A host that is
+part of a primary/reserve pair must not use it as is. See
+[ha-failover.md](ha-failover.md#running-each-hosts-router) for the HA service
+(role, node id, permit directory, no restart policy).
 
 The state lives at `/data/.tg-copilot-bridge/bot.db` — one level *below* the
 volume root, because it is kept under `$HOME` and `$HOME` is `/data` in the image.

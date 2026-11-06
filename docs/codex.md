@@ -70,9 +70,11 @@ shows it live.
    so it does not ask again.
 
 4. **Start a window** from the project folder with `clients/polydaemon-codex.sh` (copy
-   or link it there, like `polydaemon-claude.sh`). It continues the folder's most recent
-   saved thread when the daemon knows one. Empty loaded threads without a
-   persisted rollout are eligible for Telegram delivery, not for resume.
+   or link it there, like `polydaemon-claude.sh`). It continues the folder's saved
+   thread only when there is exactly one root thread (child agents, `codex exec`
+   and ephemeral threads do not count; all listing pages are read). With several
+   it refuses and asks for `resume <thread-id>` or `new` instead of picking the
+   newest.
 
    The launcher passes the physical workspace path explicitly with `--cd` in
    both the new-session and resume branches. A shell `cd` alone does not select
@@ -81,6 +83,60 @@ shows it live.
    Existing windows keep their current configuration until relaunched.
    `TG_CODEX_NEW=1 ./polydaemon-codex.sh` explicitly starts a new conversation without
    looking up a resume ID; existing history is not removed.
+
+## Which thread a window gets
+
+Each Codex window is identified by a random id its channel plugin mints at
+start (the app-server runs one plugin process per loaded thread), a
+per-process secret, and the plugin's pid. agentd keeps `window id → thread`
+in `~/.tg-bridge/codex-bindings.v2.json` (this host only, mode 0600, updated under
+an OS file lock; the older `codex-bindings.json` is imported once and never
+written) and delivers Telegram messages only to the bound
+thread:
+
+- bound: that thread, only with the secret that created the binding. A thread
+  that can no longer be read, or a malformed row, refuses the message; a
+  binding is never replaced by another thread.
+- unbound: agentd asks the tg-bridge plugin inside every loaded root thread of
+  the folder (`bridge_status`) for its window id. A binding is created only if
+  the loaded listing is complete (all pages, every thread readable), exactly
+  one thread answers with this id, and agentd can identify the requesting
+  process (pid + OS start token, looked up by agentd itself). A thread bound
+  to another window is taken over only when the process that created that
+  binding is verifiably dead (pid gone or start token changed). A missing or
+  stale registry row is NOT taken as proof (reaper, lost write, hung
+  heartbeat); alive, unknown or malformed → refused.
+- no probe match: the message may go to the folder's single root thread when
+  the loaded AND saved listings are complete and no other window whose process
+  is alive (or unknown) owns it, but that guess is never saved.
+- resume (`last-thread`): the single saved root thread that no live window
+  owns; it is reserved for 120 s so a second automatic launch is refused
+  instead of attaching to the same thread. `resume <id>` does not ask agentd.
+
+### Threat boundaries
+
+Trusted: every local process that can read agentd's bearer token
+(`~/.tg-bridge/agent.toml`) or this user's files, and the Codex app-server.
+Nothing below authenticates a caller beyond that.
+
+| Check | Proves | Does not prove |
+| --- | --- | --- |
+| bearer token | the caller can read the token file | which window or process is calling |
+| `bridge_status` probe | the plugin connection answering inside thread T has id W | which terminal UI shows T (two TUIs on one thread share one plugin); that W is not also claimed elsewhere outside the listing |
+| window secret | a later request comes from the process that created the binding (or one it told the secret) | anything about the FIRST bind: a token holder that learns a public window id can bind it with its own secret before the real plugin does |
+| pid + start token | the process recorded at bind time is still (or no longer) running | that the reported pid belongs to the plugin — the pid is self-reported |
+| registry row (`codex_window_id`) | used only to address error notices | liveness or death |
+
+The legacy path (requests without a window id, older plugins) still delivers
+to a folder's single root thread under the same completeness rules.
+
+`/restart` asks the window for its saved binding (a guess does not count) and
+relaunches with exactly that thread (`launch-ws.sh … codex thread:<id>`; the
+launch-agent advertises `thread_resume`). A Codex window without a saved
+binding is not closed. The Windows launcher (`launch-ws.ps1`) cannot pin a
+thread yet, so `/restart` refuses Codex windows there. API error notices go to
+the live window bound to the failing thread; an unbound thread with several
+Codex windows in its folder is not reported to any of them.
 
 ## Optional terminal sidebar
 

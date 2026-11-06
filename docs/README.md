@@ -5,6 +5,8 @@ Start with the [README](../README.md) and [getting-started.md](getting-started.m
 **Setting up**
 - [getting-started.md](getting-started.md) — one machine, from scratch.
 - [multi-machine.md](multi-machine.md) — one bot, windows on several machines; the launch agent.
+- [ha-failover.md](ha-failover.md) — two bot hosts, operator-controlled switchover (no automatic promotion), client endpoint list.
+- [window-identity.md](window-identity.md) — how the bot tells windows apart, and the threat boundaries.
 - [platforms.md](platforms.md) — what works on Windows, macOS and Linux.
 - [codex.md](codex.md) — Codex windows, experimental.
 - [claude-sidebar.md](claude-sidebar.md) — optional Claude terminal pane for SSH and local consoles.
