@@ -28,6 +28,10 @@ export const REGISTRY_ID = randomBytes(8).toString('hex')
 // unknown at import time): "<basename>-codex" keeps a Codex window from
 // colliding with the Claude window of the same workspace in the bot registry.
 let nameOverride: string | null = null
+// Codex plugins: the per-process window id agentd keys bindings by. Stored in
+// the LOCAL row only (agentd's liveness proof); window_uid keeps its meaning.
+let codexWindowId = ''
+export function setCodexWindowId(id: string): void { codexWindowId = id }
 export function setNameOverride(name: string): void {
   nameOverride = name
   setWorkspaceIdentity(name)
@@ -37,6 +41,33 @@ export function effectiveName(): string {
 }
 export function effectiveWorkspaceName(): string {
   return nameOverride ?? basename(process.cwd())
+}
+
+/** The launcher-minted window id, if it is one we can key on. */
+export function windowUid(): string {
+  const uid = process.env.TG_WINDOW_UID ?? ''
+  return uid.length <= 128 && /^[\x21-\x7e]*$/.test(uid) ? uid : ''
+}
+
+/** The agent this window runs, reported to the bot so it is not guessed from
+ *  the display name (which a rename changes). */
+export function windowAgent(): string {
+  const env = process.env.TG_BRIDGE_AGENT ?? ''
+  if (['opencode', 'mimo', 'codex', 'claude'].includes(env)) return env
+  return /-codex$/.test(effectiveName()) ? 'codex' : 'claude'
+}
+
+/** What a message route records about this window (mirrors route_identity()
+ *  in tg-bot/bridge/registry.py). */
+export function routeIdentity(): { row_id: string; window_uid: string | null; scope_host: string;
+  scope_cwd: string; scope_agent: string } {
+  return {
+    row_id: REGISTRY_ID,
+    window_uid: windowUid() || null,
+    scope_host: REMOTE ? ADVERTISE_HOST : '127.0.0.1',
+    scope_cwd: canonicalCwd(process.cwd()),
+    scope_agent: windowAgent(),
+  }
 }
 
 function buildRow(port: number): InstanceRow {
@@ -59,6 +90,8 @@ function buildRow(port: number): InstanceRow {
     // fall back to plain PID-liveness. See _procStartTime. (Remote rows can't
     // be PID-probed cross-host anyway — the bot uses heartbeat-only for those.)
     started_at: _procStartTime(process.pid) ?? '',
+    window_uid: windowUid(),
+    agent: windowAgent(),
   }
 }
 
@@ -78,6 +111,7 @@ export function registerInstance(port: number): void {
     // inherited by every hook. Empty for a window started outside the launcher —
     // Zed's external agent starts claude itself — so readers must keep a fallback.
     window_uid: process.env.TG_WINDOW_UID ?? '',
+    ...(codexWindowId ? { codex_window_id: codexWindowId } : {}),
   })
 }
 

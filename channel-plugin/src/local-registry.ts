@@ -53,6 +53,8 @@ export interface LocalRow {
   // Optional: absent for rows written before this existed, and for windows the
   // launcher did not start.
   window_uid?: string
+  // Codex plugin's per-process window id (agent/codex-bindings.ts liveness).
+  codex_window_id?: string
 }
 
 function readAll(): Record<string, LocalRow> {

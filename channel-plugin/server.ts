@@ -20,6 +20,7 @@ import { randomBytes, timingSafeEqual } from 'crypto'
 import { statSync, mkdirSync, writeFileSync, readdirSync, rmSync, existsSync, readFileSync, realpathSync } from 'fs'
 import { join, extname, basename } from 'path'
 import { homedir } from 'os'
+import { redactSecrets, redactTokens } from './src/redact.ts'
 
 import { log } from './src/logger.ts'
 import {
@@ -36,6 +37,7 @@ import {
   BOTAPI_CONTAINER,
   BOTAPI_WORKDIR,
   BOTAPI_SSH,
+  ENDPOINT_GENERATION,
 } from './src/config.ts'
 import { lastChatId, lastUserId, setMyPort, setLastSession } from './src/state.ts'
 import { htmlEscape, ensureWorkspaceHeader, resolveTextFormat, markdownToTelegramHtml } from './src/markdown.ts'
@@ -45,7 +47,9 @@ import {
   PARENT_CMD,
   CHANNELS_ENABLED,
   setNameOverride,
+  setCodexWindowId,
   reRegister,
+  REGISTRY_ID,
 } from './src/registry.ts'
 import { recordMessageRoute } from './src/routes-db.ts'
 import { PromptReminders, promptKey, validTopicMessage } from './src/prompt-reminders.ts'
@@ -55,14 +59,15 @@ import { contextUsage } from './src/context-usage.ts'
 import { noteTouched, recentTouches, othersTouching, overlapHealth, isSharedInfrastructure } from './src/touched.ts'
 import { myTopicBinding, forumThreadFor, myPrefix, approvalChatFor } from './src/topics.ts'
 import { formatCodexInbound } from './src/codex-inbound.ts'
-import { checkApiError, transcriptMtime } from './src/api-error-watch.ts'
+import { CODEX_WINDOW_ID, CODEX_WINDOW_SECRET, PID_HEADER, SECRET_HEADER, codexBoundThread } from './src/codex-window.ts'
+import { checkApiError, transcriptMtime, transcriptPath } from './src/api-error-watch.ts'
 import { modelKeyboardRows } from './src/models.ts'
 import {
   bot,
   observeTopicMessages,
   sendMessageSafe,
   MAX_CHUNK_LIMIT,
-  MAX_ATTACHMENT_BYTES,
+  maxAttachmentBytes,
   PHOTO_EXTS,
   assertSendable,
   chunk,
@@ -75,6 +80,7 @@ import {
   clearProgress,
 } from './src/progress.ts'
 import { recentEvents, pushRecent, truncForRecent } from './src/recent.ts'
+import { tmuxInject } from './src/tmux-prompt.ts'
 import {
   buildReplyHereKeyboard,
   formatApprovalContext,
@@ -384,7 +390,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           files: {
             type: 'array',
             items: { type: 'string' },
-            description: `Absolute paths to attach. Images inline, others as documents. Max ${Math.floor(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB each.`,
+            description: `Absolute paths to attach. Images inline, others as documents. Max ${Math.floor(maxAttachmentBytes() / 1024 / 1024)}MB each.`,
           },
           format: {
             type: 'string',
@@ -564,7 +570,26 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }))
 
+// Tool results go to the model and are logged by hosts. Tokens never belong in
+// them; local account paths are removed from failures only, since successful
+// results carry paths the agent must use (download_attachment, bridge_status).
+// Failure reasons relayed from the bot are redacted where they are read (bot-rpc).
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
+  const result: any = await callTool(req)
+  for (const part of result?.content ?? []) {
+    if (part?.type === 'text' && typeof part.text === 'string') {
+      part.text = result?.isError ? redactSecrets(part.text) : redactTokens(part.text)
+    }
+  }
+  // structuredContent mirrors the text for clients that read it (bridge_status).
+  const scrub = (v: any): any => typeof v === 'string' ? redactTokens(v)
+    : Array.isArray(v) ? v.map(scrub)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrub(x)])) : v
+  if (result?.structuredContent) result.structuredContent = scrub(result.structuredContent)
+  return result
+})
+
+async function callTool(req: any) {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
   try {
     switch (req.params.name) {
@@ -574,6 +599,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const tasks = await myTasksRemote()
         const data = {
           version: 1, root: realpathSync(process.cwd()), instance: INSTANCE_NAME,
+          // Lets agentd ask a thread's own plugin which window it belongs to.
+          ...(isCodexClient() ? { window_id: CODEX_WINDOW_ID } : {}),
           state: 'connected', working: activeProgress !== null,
           topic: topic ? { id: topic.message_thread_id, title: topic.title || INSTANCE_NAME } : null,
           pending: { approvals: pendingApprovals.size, questions: pendingAskQuestions.size, plans: pendingPlans.size },
@@ -592,8 +619,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         for (const f of files) {
           assertSendable(f)
           const st = statSync(f)
-          if (st.size > MAX_ATTACHMENT_BYTES) {
-            const maxMb = Math.floor(MAX_ATTACHMENT_BYTES / 1024 / 1024)
+          if (st.size > maxAttachmentBytes()) {
+            const maxMb = Math.floor(maxAttachmentBytes() / 1024 / 1024)
             throw new Error(`file too large: ${f} (${(st.size / 1024 / 1024).toFixed(1)}MB, max ${maxMb}MB)`)
           }
         }
@@ -666,6 +693,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const r = await routeWindowRemote(name, message, 'tell')
         if (!r.ok) {
           const avail = r.available?.length ? ` Живые окна: ${r.available.join(', ')}.` : ''
+          if (r.uncertain) return { content: [{ type: 'text', text: `⚠️ неизвестно, дошло ли до окна «${name}»: ${r.reason ?? 'unknown'}. Не отправляй повторно вслепую.` }] }
           return { content: [{ type: 'text', text: `❌ не доставлено окну «${name}»: ${r.reason ?? 'unknown'}.${avail}` }] }
         }
         return { content: [{ type: 'text', text: `✅ отправлено окну «${r.delivered ?? name}» (fire-and-forget).` }] }
@@ -678,6 +706,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const r = await routeWindowRemote(name, question, 'ask')
         if (!r.ok) {
           const avail = r.available?.length ? ` Живые окна: ${r.available.join(', ')}.` : ''
+          if (r.uncertain) return { content: [{ type: 'text', text: `⚠️ неизвестно, дошёл ли вопрос до окна «${name}»: ${r.reason ?? 'unknown'}. Не отправляй повторно вслепую.` }] }
           return { content: [{ type: 'text', text: `❌ вопрос не доставлен окну «${name}»: ${r.reason ?? 'unknown'}.${avail}` }] }
         }
         return {
@@ -825,10 +854,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         return { content: [{ type: 'text', text: `unknown tool: ${req.params.name}` }], isError: true }
     }
   } catch (err) {
+    // Errors can quote Bot API file paths, which embed the bot token
+    // (<dir>/<token>/...), or URLs built from it; the result goes to the model.
     const msg = err instanceof Error ? err.message : String(err)
     return { content: [{ type: 'text', text: `${req.params.name} failed: ${msg}` }], isError: true }
   }
-})
+}
 
 /**
  * Deliver a reply to Telegram: chunk + format, route into this window's forum
@@ -990,6 +1021,8 @@ mcp.oninitialized = () => {
     return
   }
   const name = `${basename(cwd)}-codex`
+  // agentd proves a Codex window alive by this field of its registry row.
+  setCodexWindowId(CODEX_WINDOW_ID)
   setNameOverride(name)
   startWindowRegistration()
   log(`PolyDaemon: codex host detected — renamed to ${name}`)
@@ -1036,20 +1069,30 @@ function agentDaemon(): { url: string; token: string } | null {
   return agentToml
 }
 
-async function deliverViaCodexAdapter(taggedText: string): Promise<{ ok: boolean; reason?: string }> {
+async function deliverViaCodexAdapter(taggedText: string): Promise<{ ok: boolean; reason?: string; uncertain?: boolean }> {
   const d = agentDaemon()
   if (!d) return { ok: false, reason: 'no ~/.tg-bridge/agent.toml (daemon not set up)' }
   try {
     const res = await fetch(`${d.url}/v1/codex/deliver`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${d.token}` },
-      body: JSON.stringify({ cwd: process.cwd(), text: taggedText }),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${d.token}`, [SECRET_HEADER]: CODEX_WINDOW_SECRET,
+        [PID_HEADER]: String(process.pid) },
+      body: JSON.stringify({ cwd: process.cwd(), text: taggedText, window_id: CODEX_WINDOW_ID }),
       signal: AbortSignal.timeout(35000),
     })
-    const out = await res.json().catch(() => ({})) as { ok?: boolean; reason?: string }
-    return { ok: !!out.ok, reason: out.reason }
+    let out: { ok?: boolean; reason?: string; uncertain?: boolean }
+    try { out = await res.json() as typeof out }
+    catch (e) {
+      // agentd answered but the body was cut off: it may have delivered.
+      return { ok: false, reason: `unreadable answer from agentd (HTTP ${res.status}): ${e}`, uncertain: true }
+    }
+    return { ok: !!out.ok, reason: out.reason, uncertain: out.uncertain === true }
   } catch (e) {
-    return { ok: false, reason: String(e) }
+    // Only a refused connection proves agentd never saw the request. A timeout,
+    // a reset or a dropped connection may come after it already delivered.
+    const code = (e as { code?: string })?.code ?? ''
+    const refused = /ConnectionRefused|ECONNREFUSED/i.test(`${code} ${e}`)
+    return { ok: false, reason: String(e), uncertain: !refused }
   }
 }
 
@@ -1087,7 +1130,15 @@ type InboundBody = {
 // download_attachment tool and the premium-emoji handler. Handles both the
 // local-Bot-API (docker exec/cp over ssh) and the public-API (HTTP) cases.
 async function fetchFileToInbox(fileId: string): Promise<string> {
+  // The file lives on the Bot API server that answers getFile. Pin that endpoint
+  // now: a failover or recovery during the call must not send the copy below to
+  // another host with this host's path.
+  const ep = { apiRoot: API_ROOT, isLocal: API_IS_LOCAL, ssh: BOTAPI_SSH, container: BOTAPI_CONTAINER,
+    generation: ENDPOINT_GENERATION }
   const file = await bot.api.getFile(fileId)
+  // getFile may be retried (e.g. after a 429) and each try reads the live API
+  // root: if the endpoint moved meanwhile, the path below belongs to another host.
+  if (ENDPOINT_GENERATION !== ep.generation) throw new Error('the Bot API endpoint changed during the download; try again')
   if (!file.file_path) throw new Error('Telegram returned no file_path — file may have expired')
   const rawExt = file.file_path.includes('.') ? file.file_path.split(/[./\\]/).pop()! : 'bin'
   const ext = rawExt.replace(/[^a-zA-Z0-9]/g, '') || 'bin'
@@ -1095,25 +1146,25 @@ async function fetchFileToInbox(fileId: string): Promise<string> {
   const path = join(INBOX_DIR, `${Date.now()}-${uniqueId}.${ext}`)
   mkdirSync(INBOX_DIR, { recursive: true })
 
-  if (API_IS_LOCAL) {
+  if (ep.isLocal) {
     // A --local server already downloaded the file; getFile returns a path on ITS
     // filesystem (relative to "<dir>/<bot-token>/" on newer builds, absolute on
     // older). Resolve to an absolute server-side path for the copy below.
     const src = file.file_path.startsWith('/')
       ? file.file_path
       : `${BOTAPI_WORKDIR}/${TOKEN}/${file.file_path}`
-    if (BOTAPI_SSH) {
+    if (ep.ssh) {
       // Server is on another host inside Docker: stream the bytes out with
       // `docker exec … cat` over ssh (the volume is uid-101/0750, unreadable by
       // scp/host). Escape single quotes in src (derives from Telegram's file_path)
       // before the single-quoted shell arg: ' -> '\''. -T disables the remote pty
       // so \n isn't translated to \r\n (which corrupts binary payloads).
       const safeSrc = src.replace(/'/g, "'\\''")
-      const remoteCmd = `docker exec ${BOTAPI_CONTAINER} cat '${safeSrc}'`
-      const proc = Bun.spawnSync(['ssh', '-T', '-o', 'BatchMode=yes', BOTAPI_SSH, remoteCmd])
+      const remoteCmd = `docker exec ${ep.container} cat '${safeSrc}'`
+      const proc = Bun.spawnSync(['ssh', '-T', '-o', 'BatchMode=yes', ep.ssh, remoteCmd])
       if (!proc.success) {
         const stderr = new TextDecoder().decode(proc.stderr).trim()
-        throw new Error(`ssh ${BOTAPI_SSH} docker exec cat failed (${proc.exitCode}): ${stderr || 'unknown error'}`)
+        throw new Error(`ssh ${ep.ssh} docker exec cat failed (${proc.exitCode}): ${stderr || 'unknown error'}`)
       }
       writeFileSync(path, proc.stdout)
     } else {
@@ -1124,14 +1175,14 @@ async function fetchFileToInbox(fileId: string): Promise<string> {
         const m = path.match(/^([A-Za-z]):[\\/](.*)$/)
         if (m) dest = `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`
       }
-      const proc = Bun.spawnSync([...argv, 'cp', `${BOTAPI_CONTAINER}:${src}`, dest])
+      const proc = Bun.spawnSync([...argv, 'cp', `${ep.container}:${src}`, dest])
       if (!proc.success) {
         const stderr = new TextDecoder().decode(proc.stderr).trim()
         throw new Error(`docker cp failed (${proc.exitCode}): ${stderr || 'unknown error'}`)
       }
     }
   } else {
-    const url = `${API_ROOT}/file/bot${TOKEN}/${file.file_path}`
+    const url = `${ep.apiRoot}/file/bot${TOKEN}/${file.file_path}`
     const res = await fetch(url)
     if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
     writeFileSync(path, Buffer.from(await res.arrayBuffer()))
@@ -1215,7 +1266,7 @@ function enqueueInbound(content: string, meta: Record<string, unknown>): void {
   }
 }
 
-async function handleMessage(body: InboundBody): Promise<void> {
+async function handleMessage(body: InboundBody, stage: { queued: boolean } = { queued: false }): Promise<void> {
   setLastSession(body.chat_id, body.user_id)
   const baseMeta = {
     source: 'telegram',
@@ -1235,6 +1286,7 @@ async function handleMessage(body: InboundBody): Promise<void> {
     const clearContent = '[Context reset requested by user. Please treat subsequent messages as a fresh conversation, disregarding previous context from this chat session.]'
     const clearMeta = { ...baseMeta, event: 'clear' }
     enqueueInbound(clearContent, clearMeta)
+    stage.queued = true
     await mcp.notification({
       method: 'notifications/claude/channel',
       params: { content: clearContent, meta: clearMeta },
@@ -1323,6 +1375,7 @@ async function handleMessage(body: InboundBody): Promise<void> {
   }
   // Also queue for pull-based hosts (desktop app) that ignore the notification.
   enqueueInbound(notifParams.content, notifParams.meta)
+  stage.queued = true
   log(`PolyDaemon: sending notification content="${notifParams.content.slice(0, 80)}"`)
   try {
     await mcp.notification({
@@ -1350,11 +1403,35 @@ async function handleMessage(body: InboundBody): Promise<void> {
       log(`PolyDaemon: codex adapter delivery failed: ${r.reason}`)
       try {
         const hintThread = forumThreadFor(Number(body.chat_id))
-        await bot.api.sendMessage(String(body.chat_id),
-          `😴 Окно Codex спит — сообщение в очереди. (${r.reason ?? 'адаптер недоступен'})`,
+        const hint = r.uncertain
+          ? `⚠️ Codex не ответил вовремя — неизвестно, дошло ли сообщение. Повторно не отправлял; проверьте окно, прежде чем слать снова. (${redactSecrets(r.reason ?? '').slice(0, 300)})`
+          : `😴 Окно Codex спит — сообщение в очереди. (${redactSecrets(r.reason ?? 'адаптер недоступен').slice(0, 300)})`
+        await bot.api.sendMessage(String(body.chat_id), hint,
           hintThread != null ? { message_thread_id: hintThread } : {})
       } catch { /* hint is best-effort */ }
     }
+  }
+}
+
+/** Tell the chat that a message the bot handed over did not reach the agent.
+ *  Reactions are ambient and stay silent. Best-effort: if Telegram is down too,
+ *  the log line above is all that is left. */
+async function reportUndelivered(body: InboundBody, err: unknown, queued: boolean): Promise<void> {
+  if (body.event === 'reaction') return
+  const reason = redactSecrets(err instanceof Error ? err.message : String(err))
+  // Once the message is in the pull queue the agent can still read it with
+  // `receive`, so a failed push does not mean it was lost. (The progress line
+  // is left alone: clearing it here could remove another message's.)
+  const text = queued
+    ? `⚠️ Окну не удалось показать это сообщение (${reason.slice(0, 300)}). Оно в очереди окна, но могло не дойти — проверьте, прежде чем отправлять снова.`
+    : `⚠️ Окно не приняло это сообщение (${reason.slice(0, 300)}). Оно не дошло до агента — отправьте ещё раз.`
+  try {
+    const thread = forumThreadFor(Number(body.chat_id))
+    await bot.api.sendMessage(String(body.chat_id), text,
+      { reply_parameters: { message_id: Number(body.message_id), allow_sending_without_reply: true },
+        ...(thread != null ? { message_thread_id: thread } : {}) })
+  } catch (notifyErr) {
+    log(`PolyDaemon: could not report the undelivered message: ${notifyErr}`)
   }
 }
 
@@ -1371,6 +1448,13 @@ async function startHttpServer(): Promise<number> {
             return new Response('Unauthorized', { status: 401 })
           }
           const url = new URL(req.url)
+          // A pinned request names the registry row the bot chose. Another
+          // process on this port (a newer window that took over a reused port)
+          // must not act on it.
+          const expectedRow = req.headers.get('x-polydaemon-row')
+          if (expectedRow !== null && expectedRow !== REGISTRY_ID) {
+            return Response.json({ ok: false, reason: 'not this window (registry row mismatch)' }, { status: 409 })
+          }
 
           // OpenCode admits a durable prompt before acknowledging the queue item.
           if (isQueuedClient() && req.method === 'GET' && url.pathname === '/inbound') {
@@ -1382,6 +1466,14 @@ async function startHttpServer(): Promise<number> {
             catch { return new Response('Bad JSON', { status: 400 }) }
             if (!body || typeof body.id !== 'string' || !ackInbound(body.id)) return new Response('Queue item changed', { status: 409 })
             return Response.json({ status: 'ok' })
+          }
+
+          // The Codex thread bound to this window, so /restart resumes exactly
+          // it instead of whatever thread of the folder was updated last.
+          if (req.method === 'GET' && url.pathname === '/codex-thread') {
+            if (!isCodexClient()) return Response.json({ ok: false, reason: `${agentLabel()} window has no codex thread` }, { status: 404 })
+            const r = await codexBoundThread(agentDaemon(), process.cwd())
+            return Response.json(r, { status: r.ok ? 200 : 409 })
           }
 
           if (req.method === 'GET' && url.pathname === '/ping') {
@@ -1615,7 +1707,7 @@ async function startHttpServer(): Promise<number> {
           // plain terminal answers 501.
           if (req.method === 'POST' && url.pathname === '/inject') {
             if (isQueuedClient()) return Response.json({ ok: false, reason: `${agentLabel()} does not accept Claude TUI commands` }, { status: 501 })
-            let body: { text?: string }
+            let body: { text?: string; require_empty_prompt?: boolean }
             try { body = await req.json() as typeof body }
             catch { return new Response('Bad JSON', { status: 400 }) }
             const text = String(body.text ?? '')
@@ -1638,13 +1730,19 @@ async function startHttpServer(): Promise<number> {
             // shell and the bot would report success.
             const pane = process.env.TMUX_PANE ?? ''
             if (/^%\d+$/.test(pane) && paneIsOurs(pane)) {
-              const typed = Bun.spawnSync(['tmux', 'send-keys', '-t', pane, '-l', text])
-              const entered = typed.exitCode === 0 ? Bun.spawnSync(['tmux', 'send-keys', '-t', pane, 'Enter']) : typed
-              if (entered.exitCode === 0) {
-                log(`PolyDaemon: inject(tmux) ${JSON.stringify(text)} -> pane ${pane}`)
-                return Response.json({ ok: true })
-              }
-              return Response.json({ ok: false, reason: `tmux send-keys failed: ${entered.stderr.toString().trim() || 'unknown'}` }, { status: 500 })
+              // Typed only from an empty prompt (a draft is the person's and is
+              // never cleared), and success only once the transcript shows the
+              // TUI running the command: see src/tmux-prompt.ts.
+              const r = await tmuxInject(pane, text, { transcript: transcriptPath })
+              log(`PolyDaemon: inject(tmux) ${JSON.stringify(text)} -> pane ${pane}: ${r.outcome}${r.reason ? ` (${r.reason})` : ''}`)
+              const status = r.outcome === 'confirmed' || r.outcome === 'unconfirmed' ? 200 : r.outcome === 'failed' ? 500 : 409
+              return Response.json({ ok: status === 200, outcome: r.outcome, reason: r.reason }, { status })
+            }
+            // iTerm2 and the Windows console offer no reliable look at the input,
+            // so an unattended command (auto-compact) is not typed there at all:
+            // it could land after a draft or be taken as a prompt unnoticed.
+            if (body.require_empty_prompt) {
+              return Response.json({ ok: false, outcome: 'unsupported', reason: 'cannot check the prompt is empty in this terminal' }, { status: 501 })
             }
             // macOS: type into the claude TUI via iTerm2, matching the session by
             // the claude process's controlling tty. `write text` sends the string
@@ -1992,9 +2090,13 @@ return "notfound"`
               await handleMessage(body)
               return Response.json({ status: 'queued' }, { status: 202 })
             }
-            // Fire-and-forget — don't block the HTTP response on Claude's reply
-            handleMessage(body).catch(err => {
+            // Fire-and-forget — don't block the HTTP response on Claude's reply.
+            // The bot has already counted this message as delivered, so a failure
+            // here must reach the person, not only the log.
+            const stage = { queued: false }
+            handleMessage(body, stage).catch(err => {
               log(`PolyDaemon: failed to deliver to Claude: ${err}\n`)
+              void reportUndelivered(body, err, stage.queued)
             })
             return Response.json({ status: 'queued' }, { status: 202 })
           }
@@ -2011,7 +2113,7 @@ return "notfound"`
             let nbody: { message?: string; cwd?: string; kind?: string; will_retry?: boolean }
             try { nbody = await req.json() as typeof nbody }
             catch { return new Response('Bad JSON', { status: 400 }) }
-            const message = String(nbody.message ?? '').trim()
+            const message = redactSecrets(String(nbody.message ?? '').trim())
             if (!message) return Response.json({ status: 'invalid', reason: 'message required' }, { status: 400 })
             // Logged, unlike before: "a prompt showed in the console but not in
             // Telegram" could not be traced, because a delivered notify left no trace.
@@ -2287,14 +2389,14 @@ async function pollApiError(): Promise<void> {
   const ws = htmlEscape(basename(process.cwd()))
   let text: string
   if (p.kind === 'connecting') {
-    text = `🔌 <b>${ws}</b> — нет связи с API\n<code>${htmlEscape(p.text)}</code>\n\nTелеграм работает, но до API не достучаться — клод ретраит. Проверь провайдера/VPN или подожди.`
+    text = `🔌 <b>${ws}</b> — нет связи с API\n<code>${htmlEscape(redactSecrets(p.text))}</code>\n\nTелеграм работает, но до API не достучаться — клод ретраит. Проверь провайдера/VPN или подожди.`
   } else if (p.kind === 'overflow') {
     // Non-transient: retrying re-sends the same over-limit context. The fix is to
     // shrink it — /compact (now a bot command) or /clear, then continue.
-    text = `🧱 <b>${ws}</b> — контекст переполнен\n<code>${htmlEscape(p.text)}</code>\n\nСессия упёрлась в лимит контекста — повтор НЕ поможет. Сожми её: <b>/compact</b> (или /clear в окне), потом продолжай. «Вечные» окна запускай с <code>TG_KEEP_AUTOCOMPACT=1</code>.`
+    text = `🧱 <b>${ws}</b> — контекст переполнен\n<code>${htmlEscape(redactSecrets(p.text))}</code>\n\nСессия упёрлась в лимит контекста — повтор НЕ поможет. Сожми её: <b>/compact</b> (или /clear в окне), потом продолжай. «Вечные» окна запускай с <code>TG_KEEP_AUTOCOMPACT=1</code>.`
   } else {
     const detail = p.status ? ` (${p.status}${p.errKind ? ` ${p.errKind}` : ''})` : (p.errKind ? ` (${p.errKind})` : '')
-    text = `⚠️ <b>${ws}</b> — API Error${detail}\n<code>${htmlEscape(p.text)}</code>\n\nХод оборвался. Повтори запрос, когда отпустит.`
+    text = `⚠️ <b>${ws}</b> — API Error${detail}\n<code>${htmlEscape(redactSecrets(p.text))}</code>\n\nХод оборвался. Повтори запрос, когда отпустит.`
   }
   // Usage-limit case (e.g. Fable 5 credits exhausted): the turn is dead and the
   // only way forward is a different model. Attach a one-tap switch — the bot's
@@ -2306,7 +2408,7 @@ async function pollApiError(): Promise<void> {
   const rows = isUsageLimit ? modelKeyboardRows() : []
   const reply_markup = rows.length ? { inline_keyboard: rows } : undefined
   if (isUsageLimit) {
-    text = `🚫 <b>${ws}</b> — лимит модели исчерпан\n<code>${htmlEscape(p.text)}</code>\n\nХод оборвался. Переключи модель кнопкой ниже (без перезапуска) и повтори запрос.`
+    text = `🚫 <b>${ws}</b> — лимит модели исчерпан\n<code>${htmlEscape(redactSecrets(p.text))}</code>\n\nХод оборвался. Переключи модель кнопкой ниже (без перезапуска) и повтори запрос.`
   }
   try {
     const sent = await bot.api.sendMessage(String(lastChatId), text, {

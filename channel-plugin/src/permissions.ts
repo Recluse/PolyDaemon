@@ -10,6 +10,7 @@ import {
 import { MY_PORT, lastUserId } from './state.ts'
 import { htmlEscape } from './markdown.ts'
 import { log } from './logger.ts'
+import { REGISTRY_ID, windowUid } from './registry.ts'
 
 // mtime-keyed memo for the two shared JSON files. Each is read on hot paths
 // (per send / per keyboard rebuild / per /approve-request) — statSync is a
@@ -56,12 +57,16 @@ export function getWorkspacePermissionMode(): string {
 
 export function buildReplyHereKeyboard(): { inline_keyboard: { text: string; callback_data: string }[][] } | undefined {
   if (!MY_PORT || lastUserId == null) return undefined
-  // Identity is the workspace name (must match tg-bot/bridge/registry.py), not
-  // host:port — ports rotate across restarts.
-  const ownKey = WORKSPACE_DISPLAY_NAME
+  // The bot keys windows by identity (w:<window uid> or r:<row id>, the row id
+  // prefixed with our IP when we register remotely); older bots by name.
+  const uid = windowUid()
   const activeKey = getActiveInstanceForUser(lastUserId)
-  if (!activeKey || activeKey === ownKey) return undefined
-  return { inline_keyboard: [[{ text: '📩 Ответить здесь', callback_data: `reply_to:${ownKey}` }]] }
+  const ours = !!activeKey && (activeKey === WORKSPACE_DISPLAY_NAME || (uid !== '' && activeKey.startsWith(`w:${uid}@`))
+    || activeKey === `r:${REGISTRY_ID}` || activeKey.endsWith(`#${REGISTRY_ID}`))
+  if (!activeKey || ours) return undefined
+  // "@": the bot takes the window from this message's recorded route, so the
+  // button never carries a name that another window could answer to.
+  return { inline_keyboard: [[{ text: '📩 Ответить здесь', callback_data: 'reply_to:@' }]] }
 }
 
 export function formatToolSummary(toolName: string, toolInput: unknown): string {

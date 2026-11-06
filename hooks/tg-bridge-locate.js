@@ -65,8 +65,16 @@ function matchRow(rows, cwd, {
   // plugin records — exact even when two windows share a folder, where the cwd
   // match below can only guess by the freshest heartbeat.
   const uid = windowUid;
-  if (uid) return rows.find((r) => r.window_uid === uid) || null;
+  if (uid) {
+    // Two live rows with one uid (a copied environment) are not this window:
+    // refuse rather than take the first.
+    const own = rows.filter((r) => r.window_uid === uid);
+    return own.length === 1 ? own[0] : null;
+  }
   const byParent = rows.filter((r) => Number(r.parent_pid) === parentPid);
+  // Our own plugin (its parent is our agent process) is exact, wherever the
+  // hook's cwd points: a hook that changed directory still belongs to its window.
+  if (byParent.length === 1) return byParent[0];
   // A row's cwd can be a junction/symlink (a workspace that is another folder
   // under a second name) while Claude hands the hook the RESOLVED path — so
   // compare against both, or every such window is "not found".
@@ -77,7 +85,11 @@ function matchRow(rows, cwd, {
     const wanted = [cmpForm(p), cmpForm(real(p))];
     const hits = rows.filter((r, i) => wanted.some((want) => forms[i].includes(want)));
     if (hits.length) {
-      return hits.find((r) => Number(r.parent_pid) === parentPid) || hits[0];
+      // Our own plugin (same parent process) is exact. Otherwise only a single
+      // match is: with several windows in the folder, the first is a guess.
+      const mine = hits.filter((r) => Number(r.parent_pid) === parentPid);
+      if (mine.length === 1) return mine[0];
+      return hits.length === 1 ? hits[0] : null;
     }
     const parent = path.dirname(p);
     if (parent === p) break;

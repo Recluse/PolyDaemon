@@ -47,6 +47,9 @@ function projectDir(): string {
   return join(homedir(), '.claude', 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'))
 }
 
+/** This window's newest transcript file, null when there is none. */
+export function transcriptPath(): string | null { return newestTranscript(projectDir()) }
+
 /** mtime of this window's newest transcript, 0 when there is none. */
 export function transcriptMtime(): number {
   const fp = newestTranscript(projectDir())

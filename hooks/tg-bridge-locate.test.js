@@ -36,3 +36,19 @@ console.log("plugin routing self-check OK");
 const mimo = { ...owned, workspace_name: "sample-project-mimo" };
 assert.equal(matchRow([opencode, mimo, claude], project.cwd, { ...ctx, agent: "mimo" }), mimo);
 assert.equal(matchRow([mimo, claude], project.cwd, { ...ctx, agent: "claude" }), claude);
+
+// Ambiguity is refused, never resolved to the first row.
+const twin = { ...project, parent_pid: 456 };
+const third = { ...project, parent_pid: 789 };
+assert.equal(matchRow([twin, third], project.cwd, ctx), null, "two windows in one folder, neither ours");
+assert.equal(matchRow([twin, project], project.cwd, ctx), project, "our own plugin (same parent) is exact");
+const copyA = { ...project, window_uid: "dup", parent_pid: 456 };
+const copyB = { ...project, window_uid: "dup", parent_pid: 789 };
+assert.equal(matchRow([copyA, copyB], project.cwd, { ...ctx, windowUid: "dup" }), null, "one uid on two rows");
+console.log("ambiguity self-check OK");
+
+// A hook whose cwd is another window's folder still belongs to its own window.
+const ownA = { ...project, cwd: path.resolve("/work/a"), parent_pid: 123 };
+const otherB = { ...project, cwd: path.resolve("/work/b"), parent_pid: 456 };
+assert.equal(matchRow([ownA, otherB], "/work/b", ctx), ownA);
+console.log("own-parent self-check OK");
