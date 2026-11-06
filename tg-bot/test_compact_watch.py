@@ -31,8 +31,8 @@ class CompactWatchTests(unittest.IsolatedAsyncioTestCase):
             'config': {}, 'storage': self.storage, 'bridge_client': self.client,
         }), bot=SimpleNamespace(send_message=AsyncMock()))
         self.instances = patch.object(watch, 'refresh_instances', return_value=[self.inst]).start()
-        self.inject = patch.object(watch, 'deliver_slash_command', new_callable=AsyncMock,
-                                   return_value=(True, '')).start()
+        self.inject = patch.object(watch, 'deliver_unattended_slash_command', new_callable=AsyncMock,
+                                   return_value=('confirmed', '')).start()
 
     def message(self, message_id=1, chat=-100123, topic=10, at=1000):
         now = self.clock.return_value
@@ -89,7 +89,7 @@ class CompactWatchTests(unittest.IsolatedAsyncioTestCase):
         self.inject.assert_awaited_once()
 
     async def test_transport_failure_or_ambiguous_timeout_remains_consumed(self):
-        for mid, failure in enumerate([(False, 'transport unavailable'), RuntimeError('timeout')], 1):
+        for mid, failure in enumerate([('failed', 'transport unavailable'), RuntimeError('timeout')], 1):
             with self.subTest(failure=str(failure)):
                 self.message(mid)
                 self.inject.reset_mock()
@@ -201,6 +201,33 @@ class CompactWatchTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.storage, 'claim_compact_attempt', side_effect=RuntimeError('db offline')):
             await self.tick()
         self.inject.assert_not_awaited()
+
+    async def test_topic_is_told_the_outcome_and_only_a_confirmed_run_is_called_a_compaction(self):
+        from bot.locales import ru
+        notes = {
+            'confirmed': 'compact.note_sent', 'unconfirmed': 'compact.note_unconfirmed',
+            'as_text': 'compact.note_as_text', 'refused': 'compact.note_skipped_input',
+            'unsupported': 'compact.note_skipped_unsupported', 'failed': None,
+        }
+        for mid, (outcome, key) in enumerate(notes.items(), 1):
+            with self.subTest(outcome=outcome):
+                self.message(mid, at=self.clock.return_value - 9000)
+                self.inject.reset_mock()
+                self.context.bot.send_message.reset_mock()
+                self.inject.return_value = (outcome, 'why')
+                await self.tick()
+                self.inject.assert_awaited_once()
+                if key is None:
+                    self.context.bot.send_message.assert_not_awaited()
+                else:
+                    text = self.context.bot.send_message.await_args.kwargs['text']
+                    self.assertEqual(text, watch.t(key, tokens=500, hours=9000 / 3600))
+                    self.assertIn(key, ru.STRINGS)
+                # Every outcome consumes the attempt: nothing retries on its own.
+                self.inject.reset_mock()
+                self.clock.return_value += 86400
+                await self.tick()
+                self.inject.assert_not_awaited()
 
 
 if __name__ == '__main__':

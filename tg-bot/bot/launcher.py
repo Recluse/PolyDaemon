@@ -185,8 +185,31 @@ def _has_local_launcher(cwd: str, kind: str = "claude") -> bool:
     return any((Path(cwd) / name).is_file() for name in names)
 
 
+_THREAD_ID = re.compile(r"[A-Za-z0-9_-]{1,160}")
+
+
+def _agent_for(context: ContextTypes.DEFAULT_TYPE, cwd: str) -> LaunchAgent | None:
+    agents = launch_agents(context)
+    if not agents:
+        return None
+    if cwd:
+        return next((a for a in agents if _owns(a, cwd)), None)
+    return agents[0] if len(agents) == 1 else None
+
+
+async def can_resume_thread(context: ContextTypes.DEFAULT_TYPE, cwd: str) -> bool:
+    """Can the machine owning `cwd` relaunch Codex on an exact thread? Asked
+    BEFORE /restart closes a window: a launcher that cannot pin the thread
+    would fall back to the folder lookup instead of this window's thread."""
+    if not launch_agents(context):
+        return sys.platform != "win32"       # co-located: launch-ws.sh only
+    agent = _agent_for(context, cwd)
+    return agent is not None and await get_bridge_client(context).launch_supports_thread(agent.url)
+
+
 async def launch_workspace(
-    context: ContextTypes.DEFAULT_TYPE, name: str, cwd: str = "", kind: str = "claude", new_session: bool = False
+    context: ContextTypes.DEFAULT_TYPE, name: str, cwd: str = "", kind: str = "claude", new_session: bool = False,
+    thread_id: str = "",
 ) -> None:
     """Launch the window for `name` (folder basename) in the tree at `cwd`.
 
@@ -221,6 +244,9 @@ async def launch_workspace(
     """
     if kind not in AGENT_LABELS or not isinstance(new_session, bool):
         raise ValueError("invalid launch agent or session mode")
+    # `thread_id`: resume exactly this Codex thread (/restart), not the folder's.
+    if thread_id and (kind != "codex" or new_session or not _THREAD_ID.fullmatch(thread_id)):
+        raise ValueError("invalid thread selection")
     if cwd:
         name = cwd.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
     if not _SAFE_NAME.fullmatch(name):
@@ -243,12 +269,17 @@ async def launch_workspace(
                 f"cwd was given for {name!r}"
             )
         token = str(bot_config.get("registry_enroll_token", "")).strip()
-        await get_bridge_client(context).post_launch(agent.url, token, name, cwd, kind, new_session)
+        if thread_id:
+            await get_bridge_client(context).post_launch(agent.url, token, name, cwd, kind, new_session, thread_id=thread_id)
+        else:
+            await get_bridge_client(context).post_launch(agent.url, token, name, cwd, kind, new_session)
         logger.info("launch requested for workspace %r via agent %s (%s)",
                     name, agent.url, agent.label or "unlabelled")
         return
     # Co-located: the bot runs on the machine that holds the workspaces.
     if sys.platform == "win32":
+        if thread_id:
+            raise NotImplementedError("resuming an exact Codex thread is not supported by launch-ws.ps1 yet")
         script, argv, flags = LAUNCH_SCRIPT, [
             "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", str(LAUNCH_SCRIPT), name, "-Agent", kind] + (["-Dir", cwd] if cwd else []) + (["-NewSession"] if new_session else []), _CREATE_NO_WINDOW
@@ -257,7 +288,8 @@ async def launch_workspace(
         if sys.platform != "darwin" and not shutil.which("tmux"):
             raise NotImplementedError("/launch on Linux needs tmux installed")
         script, argv, flags = MAC_LAUNCH_SCRIPT, [
-            "bash", str(MAC_LAUNCH_SCRIPT), name, cwd, kind, "new" if new_session else "resume"], 0
+            "bash", str(MAC_LAUNCH_SCRIPT), name, cwd, kind,
+            f"thread:{thread_id}" if thread_id else "new" if new_session else "resume"], 0
     if not script.is_file():
         raise FileNotFoundError(f"launch script not found: {script}")
     subprocess.Popen(

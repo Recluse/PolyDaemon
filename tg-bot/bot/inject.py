@@ -62,24 +62,48 @@ def inject_window_text(pid: int, text: str) -> None:
     logger.info("injected %r into pid %s via %s", text, pid, INJECT_SCRIPT.name)
 
 
-def active_local_pid(context: ContextTypes.DEFAULT_TYPE, target_key: str) -> int | None:
+def active_local_pid(context: ContextTypes.DEFAULT_TYPE, target_key: str, port: int | None = None,
+                     row_id: str | None = None) -> int | None:
     """The claude process id of window ``target_key``, IFF it's on this machine.
 
     parent_pid is the claude TUI (the plugin's parent); fall back to the plugin
     pid (it shares the same console). Remote (non-loopback) rows are skipped — the
     bot can't AttachConsole across hosts (the plugin handles those, see
-    ``deliver_slash_command``)."""
+    ``deliver_slash_command``).
+
+    ``row_id`` names the registry row routing chose: with two windows on one
+    name (or a reused port) the freshest heartbeat is often the other one. The
+    plugin pid's start token must still match the one it registered, or the pid
+    now belongs to another process and nothing is returned."""
     from bot.common import get_storage  # local import: bot.common imports nothing from here
+    from bridge.registry import _proc_start_token
 
     storage = get_storage(context)
-    rows = [r for r in storage.get_instances() if str(r.get("workspace_name") or "") == target_key]
+    if not row_id:
+        return None  # only the exact registry row routing chose is a valid target
+    rows = [r for r in storage.get_instances() if str(r.get("id") or "") == row_id]
     rows.sort(key=lambda r: r.get("heartbeat_at") or 0, reverse=True)
     for r in rows:
         if str(r.get("host") or "") not in _LOOPBACK_HOSTS:
             continue
-        pid = r.get("parent_pid") or r.get("pid")
-        if pid:
-            return int(pid)
+        # Typing into a console is only safe when the row's process is provably
+        # the one that registered: no recorded token, a failed lookup or a
+        # different token all refuse. (Console injection is Windows-only, where
+        # tokens are always recorded.) The keystrokes go to the TUI, the
+        # plugin's parent: a parent that exited could leave its pid to a newer
+        # process, so the target must have started no later than the plugin.
+        plugin_pid, recorded = r.get("pid"), str(r.get("started_at") or "")
+        live = _proc_start_token(plugin_pid) if isinstance(plugin_pid, int) and plugin_pid > 1 else None
+        if not recorded or live is None or live != recorded:
+            logger.warning("inject: cannot confirm that pid %s still belongs to window %s", plugin_pid, target_key)
+            return None
+        pid = r.get("parent_pid") or plugin_pid
+        if pid != plugin_pid:
+            parent = _proc_start_token(int(pid))
+            if not parent or not parent.isdigit() or not recorded.isdigit() or int(parent) > int(recorded):
+                logger.warning("inject: pid %s is no longer the console of window %s", pid, target_key)
+                return None
+        return int(pid)
     return None
 
 
@@ -106,7 +130,7 @@ async def deliver_slash_command(
         return False, t("inject.reason_window_not_found")
     host = str(getattr(inst, "host", "") or "")
     if host in _LOOPBACK_HOSTS:
-        pid = active_local_pid(context, target_key)
+        pid = active_local_pid(context, target_key, inst.port, getattr(inst, "row_id", "") or None)
         if pid is None:
             return False, t("inject.local_window_no_pid")
         try:
@@ -115,4 +139,29 @@ async def deliver_slash_command(
             logger.exception("inject failed instance=%s cmd=%s", target_key, cmd)
             return False, str(exc)
         return True, ""
-    return await get_bridge_client(context).post_inject(target_key, cmd)
+    from bridge.registry import instance_config
+    return await get_bridge_client(context).post_inject(target_key, cmd, pinned=instance_config(inst))
+
+
+async def deliver_unattended_slash_command(
+    context: ContextTypes.DEFAULT_TYPE,
+    runtime_instances: list,
+    target_key: str,
+    cmd: str,
+) -> tuple[str, str]:
+    """``deliver_slash_command`` for a command nobody is watching (auto-compact),
+    returning the plugin's outcome (see ``BridgeClient.post_inject_outcome``).
+
+    Only typed where the input can be seen to be empty: a loopback console and a
+    plugin without that check answer ``unsupported`` and get nothing typed."""
+    from bot.common import find_instance, get_bridge_client
+
+    inst = find_instance(runtime_instances, target_key)
+    if inst is None:
+        return "failed", t("inject.reason_window_not_found")
+    if str(getattr(inst, "host", "") or "") in _LOOPBACK_HOSTS:
+        return "unsupported", "a local console cannot show its input"
+    from bridge.registry import instance_config
+    return await get_bridge_client(context).post_inject_outcome(
+        target_key, cmd, pinned=instance_config(inst), require_empty_prompt=True,
+    )

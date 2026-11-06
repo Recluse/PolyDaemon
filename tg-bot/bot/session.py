@@ -14,6 +14,12 @@ class PendingCustomAsk:
     ask_id: str
     instance_key: str
     expires_at: float  # epoch seconds — past this we silently drop the marker
+    # Where the question card the person tapped lives: (chat id, topic thread
+    # id, 0 for General and private chats), and the card's message id. Only a
+    # message typed in that place (and not a reply to another message) is the
+    # answer. None only for markers set by older code.
+    place: tuple[int, int] | None = None
+    card_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -68,7 +74,8 @@ class SessionStore:
             if s.active_instance
         }
 
-    def set_pending_custom_ask(self, user_id: int, ask_id: str, instance_key: str, ttl_seconds: float = 600.0) -> None:
+    def set_pending_custom_ask(self, user_id: int, ask_id: str, instance_key: str, ttl_seconds: float = 600.0,
+                               place: tuple[int, int] | None = None, card_id: int | None = None) -> None:
         """Mark this user as in the middle of answering an AskUserQuestion with
         free text. Cleared on consume or when the TTL elapses (whichever first)."""
         session = self.get(user_id)
@@ -76,6 +83,8 @@ class SessionStore:
             ask_id=ask_id,
             instance_key=instance_key,
             expires_at=time.time() + ttl_seconds,
+            place=place,
+            card_id=card_id,
         )
 
     def peek_pending_custom_ask(self, user_id: int) -> PendingCustomAsk | None:

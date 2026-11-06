@@ -7,6 +7,8 @@ from telegram.ext import ContextTypes
 
 from bot.callback_data import CB_EFFORT
 from bot.common import (
+    take_confirmation,
+    remember_confirmation,
     get_display_name,
     get_user_id,
     refresh_instances,
@@ -49,12 +51,13 @@ async def effort_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     target = resolve_topic_target(update, context, runtime_instances, user_id)
     display = get_display_name(context, target)
-    await reply(
+    sent = await reply(
         update, context,
         t("effort.pick_level", display=display),
         parse_mode="HTML",
         reply_markup=effort_keyboard(),
     )
+    remember_confirmation(context, sent, "effort", target, runtime_instances)
 
 
 async def effort_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -70,11 +73,12 @@ async def effort_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer(t("effort.unknown_level"), show_alert=True)
         return
 
-    user_id = get_user_id(update)
     runtime_instances = refresh_instances(context)
-    # Resolve from the TOPIC the button sits in (not the active window) so /effort
-    # always hits the window whose conversation you're looking at.
-    target = resolve_topic_target(update, context, runtime_instances, user_id)
+    # The window the picker was shown for (that exact process), consumed.
+    target = take_confirmation(context, query.message, "effort", runtime_instances)
+    if target is None:
+        await query.answer(t("cb.confirmation_stale"), show_alert=True)
+        return
     display = get_display_name(context, target)
 
     # The bridge can't deliver "/effort high" as a slash command (it'd arrive as a

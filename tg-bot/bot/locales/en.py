@@ -94,6 +94,9 @@ STRINGS: dict[str, str] = {
     "msg.save_reports_topics": "Reports will land in their topics: {names}",
     "msg.status_pick_window": "📈 Tap a window — I'll show what it's working on:",
     "msg.window_gone": "🚫 Window “{name}” is no longer registered.",
+    "msg.reply_window_gone": "🚫 The window this message belongs to is closed or cannot be told apart from another. Write in its topic or pick a window.",
+    "cb.confirmation_stale": "This button has expired (the bot restarted, time passed, or it was already used). Run the command again.",
+    "msg.ask_owner_gone": "🚫 The window that asked has closed. The answer was not sent anywhere.",
     "msg.window_not_running": "🚫 Window '{name}' is not running.",
 
     # --- Inline buttons and callbacks ----------------------------------------------
@@ -151,12 +154,14 @@ STRINGS: dict[str, str] = {
     "exit.cancelled_toast": "Cancelled",
     "exit.closing": "🚪 Window <b>{display}</b> is closing (<code>/exit</code>). Bring it back with /launch.",
     "exit.confirm": "🚪 Close window <b>{display}</b>? Claude will run <code>/exit</code> (you can bring the session back with /launch).",
+    "exit.restart_codex_unbound": "❌ Not restarting: this window's Codex thread is unknown ({reason}). The window was left alone — relaunch it by hand with resume <id>.",
     "exit.restart_close_failed": "❌ Could not close it: {reason}. If the plugin is old (no /inject) — restart the window manually once.",
     "exit.restart_confirm": "🔄 Restart window <b>{display}</b>? The current session will close (<code>/exit</code>) and come up again (resumed via --continue).",
     "exit.restart_done": "🔄 <b>{display}</b> restarted — the window comes up in ~15s, you'll get “🟢 Window appeared”.",
     "exit.restart_not_closed": "⚠️ <b>{display}</b> did not close — /exit was sent, but the window is still running, so it was not started a second time. Check it, then /restart again.",
     "exit.restart_stale_none": "✅ Every window already runs its machine's current code.",
     "exit.still_open": "did not close",
+    "exit.reconnected": "reconnected as a new process since the confirmation; confirm again",
     "exit.restart_launch_failed": "⚠️ <b>{display}</b> closed, but launching it again failed: {error}\nBring it up manually — /launch.",
     "exit.restart_pending": "🔄 <b>{display}</b>: <code>/exit</code> sent, waiting for it to close, then bringing it back up…",
     "exit.restart_toast": "🔄 {display}: closing it and bringing it back up…",
@@ -200,7 +205,11 @@ STRINGS: dict[str, str] = {
     "status.recovered": "✅ <b>{name}</b> — back to normal.\n{page}",
 
     # --- Idle compaction -----------------------------------------------------------
-    "compact.note_sent": "🗜 Sent an automatic context compaction: ~{tokens}k tokens, window silent for {hours:.1f}h.",
+    "compact.note_sent": "🗜 Started an automatic context compaction: ~{tokens}k tokens, window silent for {hours:.1f}h.",
+    "compact.note_unconfirmed": "🗜 Typed /compact into the window (~{tokens}k tokens, silent for {hours:.1f}h), but nothing confirms it started. Not retrying.",
+    "compact.note_as_text": "⚠️ Auto-compaction failed: /compact reached the window as plain text (~{tokens}k tokens). Not retrying — compact it manually.",
+    "compact.note_skipped_input": "🗜 Auto-compaction skipped: the window's input holds text, left untouched (~{tokens}k tokens, silent for {hours:.1f}h). Not retrying.",
+    "compact.note_skipped_unsupported": "🗜 Auto-compaction skipped: this terminal does not show its input, so nothing was typed blind (~{tokens}k tokens). Not retrying.",
 
     # --- Slash-command injection ---------------------------------------------------
     "inject.local_window_no_pid": "local window without a PID",

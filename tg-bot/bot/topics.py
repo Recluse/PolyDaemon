@@ -56,6 +56,10 @@ def forum_chat_id(config: dict[str, Any]) -> int | None:
 
 
 def instance_agent(instance: RuntimeInstance) -> str:
+    # The plugin's own report; the name suffix only for older plugins.
+    reported = getattr(instance, "agent", "") or ""
+    if reported in ("claude", "codex", "opencode", "mimo"):
+        return reported
     for agent in ("codex", "opencode", "mimo"):
         if instance.display_name.endswith(f"-{agent}") or instance.instance_name.endswith(f"-{agent}"):
             return agent

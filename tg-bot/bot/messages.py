@@ -10,12 +10,19 @@ from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 
 from bot.common import (
+    ask_place,
     build_window_options,
     ensure_active_session,
     find_instance,
     get_bridge_client,
     get_display_name,
     get_sessions,
+    ambiguous_target,
+    instances_named,
+    route_target,
+    topic_windows,
+    unavailable_label,
+    unavailable_target,
     get_storage,
     get_user_id,
     persist_active_instances,
@@ -39,6 +46,7 @@ from bot.keyboards import (
 from bot.launcher import list_launchable
 from bot.topics import addressed_window, forum_chat_id, resolve_workspace_id, topics_are_shared
 from bridge.protocol import make_request_id
+from bridge.registry import instance_config
 
 
 # Prompt fanned out to every active window when the user taps 💾 Сохраняемся.
@@ -55,15 +63,16 @@ from utils.image_utils import encode_image_bytes, pick_image_mime_type
 logger = logging.getLogger(__name__)
 
 
-def _instance_named(instances: list[Any], name: str) -> Any | None:
-    """A live window that answers to `name`, case-insensitively. Tries the name
-    the person sees first, then the ones only the machinery uses."""
-    wanted = name.strip().lower()
-    for attr in ("display_name", "instance_name", "key"):
-        for inst in instances:
-            if str(getattr(inst, attr, "") or "").lower() == wanted:
-                return inst
-    return None
+def _addressed_target(instances: list[Any], name: str) -> str:
+    """The key for a window addressed by name in a shared topic: the one live
+    window that answers to it, or a marker that matches nothing when none or
+    several do (the person must be precise; we do not pick)."""
+    named = instances_named(instances, name)
+    if len(named) == 1:
+        return named[0].key
+    if named:
+        return ambiguous_target(f"{name} ({len(named)})")
+    return unavailable_target(name)
 
 
 def _resolve_topic_target(
@@ -77,8 +86,8 @@ def _resolve_topic_target(
 
     Two outcomes when the binding exists:
       • live window matches the topic's cwd → return its runtime key.
-      • binding exists but no live window → return the stored title (== the
-        original workspace_name). The caller's ``post_message`` will then raise
+      • binding exists but no live window → return ``unavailable_target(title)``,
+        a key no window can match. The caller's ``post_message`` will then raise
         ``KeyError`` and the user sees a clean "🚫 окно X не найдено" instead
         of having the message silently rerouted to whichever window is active
         (which used to look like "the topic and the window got swapped").
@@ -101,29 +110,49 @@ def _resolve_topic_target(
         name = addressed_window(message.text or message.caption or "")
         if name is None:
             return None, None, None
-        inst = _instance_named(instances, name)
-        # No live window by that name: hand the name back anyway. post_message
-        # raises KeyError on it and the person gets "🚫 окно X не найдено",
-        # which is the truth, instead of the message quietly going to whichever
-        # window happened to be active.
-        return (inst.key if inst is not None else name), message.chat_id, thread_id
+        # No live window by that name (or several): a marker that matches no
+        # window. post_message raises KeyError on it and the person gets told,
+        # instead of the message quietly going to whichever window was active.
+        return _addressed_target(instances, name), message.chat_id, thread_id
 
-    # Shared thread (one project on several machines): route to whichever
-    # binding has a LIVE window — the dead machine's row must not shadow it.
-    inst = None
-    workspace_id = candidates[0]
-    for cand in candidates:
-        inst = next((i for i in instances if resolve_workspace_id(i) == cand), None)
-        if inst is not None:
-            workspace_id = cand
-            break
-    if inst is not None:
-        return inst.key, message.chat_id, thread_id
-    topic = storage.get_topic(workspace_id)
-    if topic is None:
-        return None, None, None
-    title = topic[2]  # (forum_chat_id, message_thread_id, title, closed, icon, status)
-    return title, message.chat_id, thread_id
+    return _topic_key(storage, message.chat_id, thread_id, instances)[0], message.chat_id, thread_id
+
+
+def _topic_key(storage, chat_id: int, thread_id: int, instances: list) -> tuple[str | None, Any]:
+    """(key, instance) of a per-window topic's window: the ONE live window of
+    its bindings. None when the thread is not a window topic. Several live
+    windows (two in the folder, the same path on two hosts) → an ambiguous
+    marker; none → an unavailable marker under the topic's title. The title is
+    only a label: returned as a key it matched any live window with the same
+    workspace name, and the message was delivered there."""
+    candidates, live = topic_windows(storage, chat_id, thread_id, instances)
+    if not candidates:
+        return None, None
+    if len(live) == 1:
+        return live[0].key, live[0]
+    topic = storage.get_topic(candidates[0])
+    title = topic[2] if topic and len(topic) > 2 else candidates[0]
+    if live:
+        return ambiguous_target(f"{title} ({len(live)})"), None
+    return unavailable_target(title), None
+
+
+def _topic_window(context, message, topic_key: str | None, instances: list) -> tuple[str | None, Any]:
+    """Resolve a topic's window again against the registry that is about to be
+    used, and return (key, instance) for the send.
+
+    The topic was resolved against a cached instance list, possibly before an
+    ``await``: that window may be gone, another may have come up, and a second
+    window of the same workspace may now share the topic. Outside shared topics
+    the target is recomputed from the topic's bindings; the instance is
+    returned so the caller sends to that exact process."""
+    if topic_key is None or topics_are_shared() or message.message_thread_id is None:
+        inst = find_instance(instances, topic_key) if topic_key is not None else None
+        return topic_key, inst
+    key, inst = _topic_key(get_storage(context), message.chat_id, message.message_thread_id, instances)
+    if key is None:
+        return topic_key, find_instance(instances, topic_key)
+    return key, inst
 
 
 async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -151,6 +180,10 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # ordinary turn while the tool call kept blocking, AND the still-armed marker
     # then swallowed the next DM message instead (found by audit, 2026-09-15).
     # Kept after the button check so a reply-keyboard tap still wins in a DM.
+    if topic_target[0] is not None:
+        # The ask may belong to a same-named window that took the cached key.
+        topic_key, _ = _topic_window(context, message, topic_target[0], refresh_instances(context))
+        topic_target = (topic_key, topic_target[1], topic_target[2])
     if await _maybe_deliver_custom_ask(update, context, message.text, topic_key=topic_target[0]):
         return
 
@@ -163,6 +196,18 @@ def _describe_unhandled(message: Any) -> str:
     (sticker, dice, GIF, poll, story, …) so the window gets *something* instead
     of the message silently vanishing. Order = most-common first."""
     m = message
+    pinned = getattr(m, "pinned_message", None)
+    if pinned is not None:
+        message_id = getattr(pinned, "message_id", None)
+        label = f" #{message_id}" if message_id is not None else ""
+        content = getattr(pinned, "text", None) or getattr(pinned, "caption", None)
+        heading = f"[Событие Telegram: закреплено сообщение{label}]"
+        if content:
+            excerpt = content[:2000]
+            if len(content) > 2000:
+                excerpt += "\n[текст сокращён]"
+            return heading + "\nКонтекст закрепления (цитата, не новое поручение):\n" + excerpt
+        return heading + "\n[Текст или подпись закреплённого сообщения недоступны]"
     if getattr(m, "sticker", None):
         kind = ("анимированный стикер" if m.sticker.is_animated
                 else "видео-стикер" if m.sticker.is_video else "стикер")
@@ -316,8 +361,12 @@ async def unhandled_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
 
     descr = _describe_unhandled(message)
-    logger.info("unhandled message user_id=%s -> %s (api_kwargs=%s)",
-                user.id, descr, list(api_kwargs.keys()))
+    if message.pinned_message is not None:
+        logger.info("pinned_message forwarded user_id=%s message_id=%s pinned_message_id=%s",
+                    user.id, message.message_id, message.pinned_message.message_id)
+    else:
+        logger.info("unhandled message user_id=%s -> %s (api_kwargs=%s)",
+                    user.id, descr, list(api_kwargs.keys()))
     await _forward_message(update, context, text=descr, topic_target=topic_target)
 
 
@@ -339,38 +388,74 @@ async def _maybe_deliver_custom_ask(
     if user is None:
         return False
     sessions = get_sessions(context)
-    if topic_key is not None:
-        pending = sessions.peek_pending_custom_ask(user.id)
-        if pending is None or pending.instance_key != topic_key:
-            return False
-    marker = sessions.consume_pending_custom_ask(user.id)
-    if marker is None:
+    pending = sessions.peek_pending_custom_ask(user.id)
+    if pending is None:
         return False
+    instances = refresh_instances(context)
+    # The ask belongs to the process that sent it ("row:<id>"); a marker written
+    # by older code holds a window key.
+    if pending.instance_key.startswith("row:"):
+        row_id = pending.instance_key[4:]
+        owner = next((i for i in instances if i.row_id == row_id), None)
+    else:
+        owner = find_instance(instances, pending.instance_key)
+    msg = update.effective_message
+    if pending.place is not None:
+        # The answer is typed where the question card is: the same chat and
+        # the same topic (0 = General or a private chat), and it is not a reply
+        # to some other message. Anything else belongs to wherever it was
+        # typed, whether the asking process is alive or gone; the marker stays
+        # armed until it is answered or expires.
+        if msg is None or ask_place(msg) != pending.place:
+            return False
+        # A plain message in a topic carries an implicit reply to the topic's
+        # root (message id = thread id); that is not a reply to anything. A
+        # reply to a message from another chat or topic arrives as
+        # external_reply instead.
+        replied = msg.reply_to_message
+        if replied is not None and replied.message_id not in (pending.card_id, msg.message_thread_id):
+            return False
+        if getattr(msg, "external_reply", None) is not None:
+            return False
+    replies_to_card = (msg is not None and msg.reply_to_message is not None
+                       and pending.card_id is not None and msg.reply_to_message.message_id == pending.card_id)
+    if (topic_key is not None and owner is not None and owner.key != topic_key and not replies_to_card
+            and (pending.place is None or find_instance(instances, topic_key) is not None)):
+        # Addressed to another LIVE window (its topic, or @name in a shared
+        # topic): not an answer to this ask; the marker stays armed. When the
+        # answer is typed at the card (markers with a place), a marker key
+        # (ambiguous or unavailable topic) is not another window; an explicit
+        # reply to the card is always the answer. Older markers keep the strict
+        # rule: any other target refuses.
+        return False
+    sessions.consume_pending_custom_ask(user.id)
+    if owner is None:
+        # The asking process is gone: no window may receive this answer in its
+        # place. Tell the person; do not forward it anywhere.
+        logger.info("custom-ask owner gone user_id=%s marker=%s — not forwarded", user.id, pending.instance_key)
+        await reply(update, context, t("msg.ask_owner_gone"))
+        return True
 
     bridge_client = get_bridge_client(context)
-    ok = await bridge_client.post_ask_action(
-        marker.instance_key, marker.ask_id, text=text,
-    )
+    ok = await bridge_client.post_ask_action(owner.key, pending.ask_id, text=text, pinned=instance_config(owner))
     if ok:
-        logger.info(
-            "custom-ask answered user_id=%s instance=%s len=%s",
-            user.id, marker.instance_key, len(text),
-        )
+        logger.info("custom-ask answered user_id=%s instance=%s len=%s", user.id, owner.key, len(text))
         await reply(update, context, t("msg.answer_delivered"))
-    else:
-        # Plugin no longer tracks this id — either the ask already timed out
-        # on the plugin side, or the plugin restarted. Tell the user instead
-        # of silently swallowing their typed reply.
-        # The ask is gone on the plugin side (timed out, or the plugin restarted).
-        # Say so, then return False so the caller forwards the text as an ordinary
-        # prompt: the user typed something deliberate, and dropping it made them
-        # retype it for nothing.
-        logger.info(
-            "custom-ask expired user_id=%s instance=%s — forwarding as a normal prompt",
-            user.id, marker.instance_key,
-        )
-        await reply(update, context, t("msg.ask_expired"))
-        return False
+        return True
+    # The ask timed out in that same process: deliver the text to THAT process as
+    # an ordinary prompt (the person typed something deliberate), never to the
+    # active window, which may be another workspace.
+    logger.info("custom-ask expired user_id=%s instance=%s — forwarding to the same window", user.id, owner.key)
+    await reply(update, context, t("msg.ask_expired"))
+    try:
+        await bridge_client.post_message(owner.key, {
+            "request_id": make_request_id(), "chat_id": update.effective_message.chat_id, "user_id": user.id,
+            "message_id": update.effective_message.message_id, "text": text,
+            "sender_name": user.full_name, "sender_username": user.username or "",
+        }, pinned=instance_config(owner))
+    except Exception as exc:
+        logger.info("custom-ask fallback delivery to %s failed: %s", owner.key, exc)
+        await reply(update, context, t("msg.window_not_running", name=owner.display_name))
     return True
 
 
@@ -510,8 +595,9 @@ async def reaction_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return  # not a Claude message — nothing to forward
 
     runtime_instances = refresh_instances(context)
-    if find_instance(runtime_instances, routed) is None:
-        logger.info("reaction skipped: instance=%s no longer registered", routed)
+    window = route_target(routed, runtime_instances)
+    if window is None:
+        logger.info("reaction skipped: the window of message %s is gone or ambiguous", target_message_id)
         return
 
     old_emojis = _render_reactions(reaction.old_reaction)
@@ -522,7 +608,7 @@ async def reaction_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
     logger.info(
         "reaction user_id=%s msg=%s instance=%s %s -> %s",
-        user.id, target_message_id, routed, old_emojis or '∅', new_emojis or '∅',
+        user.id, target_message_id, window.key, old_emojis or '∅', new_emojis or '∅',
     )
 
     # Premium/custom emoji in the NEW reaction ride along as images too, same as
@@ -548,7 +634,7 @@ async def reaction_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     bridge_client = get_bridge_client(context)
     try:
-        await bridge_client.post_message(routed, body)
+        await bridge_client.post_message(window.key, body, pinned=instance_config(window))
     except KeyError:
         logger.info("reaction forward: unknown instance %s", routed)
     except PermissionError as exc:
@@ -699,6 +785,7 @@ async def _forward_message(
     # Caller (text_message) may have already resolved this — reuse to avoid the
     # duplicate storage query + instance scan.
     topic_key, _topic_chat, _topic_thread = topic_target if topic_target is not None else _resolve_topic_target(update, context)
+    topic_key, topic_window = _topic_window(context, message, topic_key, runtime_instances)
     target_instance = session.active_instance
     if topic_key is not None:
         target_instance = topic_key
@@ -706,13 +793,27 @@ async def _forward_message(
         reply_to = message.reply_to_message
         if reply_to is not None:
             routed = storage.lookup_route(message.chat_id, reply_to.message_id)
-            if routed and find_instance(runtime_instances, routed) is not None:
-                if routed != session.active_instance:
+            if routed:
+                # A reply to a window's message belongs to THAT window. If it is
+                # gone (or cannot be told apart), refuse instead of falling back
+                # to the active window, which may be another workspace.
+                window = route_target(routed, runtime_instances)
+                if window is None:
+                    await reply(update, context, t("msg.reply_window_gone"))
+                    return
+                if window.key != session.active_instance:
                     logger.info(
                         "reply-to routing user_id=%s reply_to=%s instance=%s (active=%s)",
-                        user.id, reply_to.message_id, routed, session.active_instance,
+                        user.id, reply_to.message_id, window.key, session.active_instance,
                     )
-                target_instance = routed
+                target_instance = window.key
+                topic_window = window
+            elif reply_to.from_user is not None and reply_to.from_user.is_bot:
+                # A reply to a window's message whose route is unknown (never
+                # recorded, or cleaned up): which window sent it cannot be known,
+                # and the active window may be another workspace. Refuse.
+                await reply(update, context, t("msg.reply_window_gone"))
+                return
 
     body: dict[str, Any] = {
         "request_id": make_request_id(),
@@ -737,7 +838,12 @@ async def _forward_message(
 
     logger.info("forwarding to instance=%s user_id=%s", target_instance, user.id)
     try:
-        await bridge_client.post_message(target_instance, body)
+        # Send to the exact process chosen above (topic, reply or active window),
+        # resolved against the registry fetched for this send.
+        chosen = topic_window if topic_window is not None and topic_window.key == target_instance \
+            else find_instance(runtime_instances, target_instance)
+        pinned = instance_config(chosen) if chosen is not None else None
+        await bridge_client.post_message(target_instance, body, pinned=pinned)
     except KeyError:
         target_label = get_display_name(context, target_instance)
         await reply(update, context, t("msg.window_not_running", name=target_label))
@@ -1018,7 +1124,10 @@ async def _maybe_handle_window_button(update: Update, context: ContextTypes.DEFA
     match = next((i for i in instances if i.display_name == text), None)
     if match is not None:
         fresh = refresh_instances(context)
-        match = next((i for i in fresh if i.display_name == text), None)
+        # Only an unambiguous label switches (labels are made unique, but a
+        # stale keyboard can still show one that now matches two windows).
+        hits = [i for i in fresh if i.display_name == text]
+        match = hits[0] if len(hits) == 1 else None
         await _safe_delete(context, chat_id, message.message_id)
         if match is None:
             sent = await context.bot.send_message(

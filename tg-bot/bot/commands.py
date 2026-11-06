@@ -109,12 +109,17 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "text": "",
         "clear": True,
     }
+    # In a window's topic, /clear resets THAT window (like /compact), and a dead
+    # window's topic fails instead of resetting the active one.
+    target = resolve_topic_target(update, context, runtime_instances, user.id)
     bridge_client = get_bridge_client(context)
     try:
-        await bridge_client.post_message(session.active_instance, body)
+        await bridge_client.post_message(target, body)
         await reply(update, context, t("cmd.clear_sent"))
+    except KeyError:
+        await reply(update, context, t("msg.window_not_running", name=get_display_name(context, target)))
     except Exception as exc:
-        logger.exception("clear failed instance=%s", session.active_instance)
+        logger.exception("clear failed instance=%s", target)
         await reply(update, context, t("cmd.error", error=exc))
 
 

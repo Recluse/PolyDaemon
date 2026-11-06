@@ -8,6 +8,8 @@ from telegram.ext import ContextTypes
 
 from bot.callback_data import CB_MODEL
 from bot.common import (
+    take_confirmation,
+    remember_confirmation,
     get_display_name,
     get_user_id,
     refresh_instances,
@@ -70,12 +72,13 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     alias = " ".join(context.args).strip() if context.args else ""
     if not alias:
-        await reply(
+        sent = await reply(
             update, context,
             t("model.pick_prompt", display=display),
             parse_mode="HTML",
             reply_markup=model_keyboard(),
         )
+        remember_confirmation(context, sent, "model", target, runtime_instances)
         return
     if not _ALIAS_RE.match(alias):
         await reply(update, context, t("model.bad_alias"))
@@ -109,9 +112,11 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer(t("model.bad_alias_short"), show_alert=True)
         return
 
-    user_id = get_user_id(update)
     runtime_instances = refresh_instances(context)
-    target = resolve_topic_target(update, context, runtime_instances, user_id)
+    target = take_confirmation(context, query.message, "model", runtime_instances)
+    if target is None:
+        await query.answer(t("cb.confirmation_stale"), show_alert=True)
+        return
     display = get_display_name(context, target)
 
     ok, reason = await _deliver_model(context, runtime_instances, target, alias)

@@ -9,6 +9,13 @@ from typing import TYPE_CHECKING, Any
 
 from bridge.client import InstanceConfig
 
+# Prefix of the key the bot uses for a forum topic whose window is not running
+# (bot.common.unavailable_target). No registered window may carry it.
+UNAVAILABLE_PREFIX = "\u2298unavailable:"
+# Same reservation for a target that names several live windows.
+AMBIGUOUS_PREFIX = "\u2298ambiguous:"
+_RESERVED_LEAD = "\u2298"
+
 if TYPE_CHECKING:
     from bot.storage import Storage
 
@@ -102,24 +109,77 @@ class RuntimeInstance:
     # across restarts on the same host, so it's the binding key for forum topics
     # (see bot/topics.py). Empty for older plugins that didn't write `cwd`.
     cwd: str = ""
+    # The registry row this instance came from (unique per plugin process), and
+    # its parent pid / start token. Names repeat; these say WHICH process.
+    row_id: str = ""
+    parent_pid: int | None = None
+    started_at: str = ""
+    # Launcher-minted per-window id (TG_WINDOW_UID); "" for windows started
+    # outside a launcher or by an older plugin.
+    window_uid: str = ""
+    # The agent the plugin reports; "" for older plugins (then derived from the
+    # name suffix, see bot.topics.instance_agent).
+    agent: str = ""
+    # Set when this row cannot carry its window's identity: another live row
+    # claims the same window_uid. Such rows are addressable only per row.
+    uid_conflict: bool = False
+    # The workspace (folder) name the plugin registered, unchanged by label
+    # de-duplication: what a relaunch needs.
+    workspace_name: str = ""
+
+
+def row_agent(row: dict) -> str:
+    """The agent of a registry row: the plugin's own report, else (older
+    plugins) the instance-name suffix."""
+    reported = str(row.get("agent") or "")
+    if reported in ("claude", "codex", "opencode", "mimo"):
+        return reported
+    name = str(row.get("instance_name") or row.get("workspace_name") or "")
+    for agent in ("codex", "opencode", "mimo"):
+        if name.endswith(f"-{agent}"):
+            return agent
+    return "claude"
+
+
+def route_identity(row: dict) -> dict:
+    """What a message route must remember about the window that sent it, taken
+    from the window's registry row (never from what a client claims)."""
+    return {
+        "row_id": str(row.get("id") or "") or None,
+        "window_uid": str(row.get("window_uid") or "") or None,
+        "scope_host": str(row.get("host") or "") or None,
+        "scope_cwd": canonical_cwd(str(row.get("cwd") or "")) or None,
+        "scope_agent": row_agent(row),
+    }
+
+
+def window_key(row_id: str, window_uid: str = "", scope: tuple[str, str, str] | None = None) -> str:
+    """The bot's key for a window: ``w:<uid>@<scope hash>`` for a launcher-
+    identified window, ``r:<row id>`` for one known only by its current
+    incarnation. Never a name: names repeat across folders and hosts, and a key
+    that is a name routes to whichever window holds it.
+
+    The uid alone is not trusted (it is copied with an environment, and any
+    enrolled peer can claim one): the key also covers host, folder and agent, so
+    a stored key (active window, default window) can only ever resolve to a
+    window in the same place, never to the same uid registered elsewhere."""
+    if not window_uid:
+        return f"r:{row_id}"
+    import hashlib
+    digest = hashlib.sha256("\x00".join((window_uid, *(scope or ("", "", "")))).encode()).hexdigest()[:12]
+    return f"w:{window_uid}@{digest}"
 
 
 def load_runtime_instances(
     config: dict[str, Any], storage: "Storage", *, keep_duplicates: bool = False,
 ) -> list[RuntimeInstance]:
-    # Identity is the workspace NAME, not host:port. Ports rotate freely across
-    # restarts, and two windows must never collide on identity just because one
-    # reused (or held a stale registration on) the other's port — that silently
-    # mis-routed a topic to the wrong window before. Names are curated unique per
-    # host; the duplicate-name path below is only a misconfiguration safety net.
-    instances_by_key: dict[str, RuntimeInstance] = {}
-    # Stable tiebreak token of the current winner per key: (started_at, -port).
-    # started_at is an opaque per-OS process-creation token (digits) — fixed for a
-    # process's whole lifetime — so a winner chosen by it does NOT change between
-    # refreshes. This is what stops two concurrently-live windows on the same
-    # folder from ping-ponging the routing (see the same-cwd branch below).
-    chosen_by_key: dict[str, tuple[int, int]] = {}
-    processes: list[RuntimeInstance] = []
+    """Every live window, keyed by identity (see ``window_key``), not by name.
+
+    Two windows that share a name, a folder, or a folder AND agent on one host
+    are separate entries; choosing between them is the caller's job (and an
+    ambiguous choice must be refused, not guessed). ``keep_duplicates`` is kept
+    for callers that used to ask for every process; the result is the same."""
+    rows: list[tuple[dict, RuntimeInstance]] = []
     stale_ids: list[str] = []
     now = time.time()
 
@@ -155,85 +215,73 @@ def load_runtime_instances(
             continue
 
         port_value = row.get("port")
-        if not isinstance(port_value, int):
+        row_id = str(row.get("id") or "")
+        if not isinstance(port_value, int) or not row_id:
             continue
 
-        # Fallback chain keeps older plugins (no workspace_name) working.
-        key = str(row.get("workspace_name") or row.get("instance_name") or f"{host}:{port_value}")
+        name = str(row.get("workspace_name") or row.get("instance_name") or f"{host}:{port_value}")
+        if name.startswith(_RESERVED_LEAD) or any(ord(ch) < 32 for ch in name):
+            # The bot targets a topic whose window is down with a key carrying this
+            # prefix; a registered window holding it would receive those messages.
+            logger.warning("registry: dropping instance row with reserved or control characters in its name")
+            continue
+        uid = str(row.get("window_uid") or "")
+        if uid and (len(uid) > 128 or any(ord(ch) < 33 for ch in uid)):
+            uid = ""  # not an id we can key on; the row stays usable per incarnation
 
-        instance = RuntimeInstance(
-            key=key,
-            display_name=str(row.get("workspace_name") or row.get("instance_name") or key),
-            instance_name=str(row.get("instance_name") or key),
+        rows.append((row, RuntimeInstance(
+            key=window_key(row_id),
+            display_name=name,
+            instance_name=str(row.get("instance_name") or name),
             host=host,
             port=port_value,
             auth_token=str(row.get("auth_token") or ""),
             cwd=canonical_cwd(str(row.get("cwd") or "")),
-        )
+            row_id=row_id,
+            parent_pid=row.get("parent_pid") if isinstance(row.get("parent_pid"), int) else None,
+            started_at=str(row.get("started_at") or ""),
+            window_uid=uid,
+            agent=str(row.get("agent") or ""),
+            workspace_name=name,
+        )))
 
-        # Decisions carry a random prompt id owned by ONE process. Keep every
-        # validated endpoint for those, including subagents sharing a workspace.
-        if keep_duplicates:
-            processes.append(instance)
-            continue
-
-        # Later-started wins; lower port breaks ties. Both are stable, unlike the
-        # old "freshest heartbeat wins" — which flip-flopped every ~15s between two
-        # live windows and silently split a topic's inbound across them. '' / non
-        # numeric started_at → 0 so a tokenless row never shadows one that has it.
-        raw_token = str(row.get("started_at") or "")
-        token = int(raw_token) if raw_token.isdigit() else 0
-        cand = (token, -port_value)
-
-        prior = instances_by_key.get(key)
-        if prior is None:
-            instances_by_key[key] = instance
-            chosen_by_key[key] = cand
-            continue
-
-        if prior.cwd and instance.cwd and prior.cwd != instance.cwd:
-            # Two *different* workspaces share a name — the user is meant to keep
-            # these unique. Keep the winner and warn so it's diagnosable instead
-            # of silently shadowing one window.
-            logger.warning(
-                "registry: workspace name %r used by two cwds (%s vs %s) — keep one; rename the other",
-                key, prior.cwd, instance.cwd,
-            )
-        else:
-            # Same folder open in two live windows — routing can target only one.
-            # This is the "messages only sometimes arrive" cause: warn loudly and
-            # keep a STABLE winner so inbound stops ping-ponging between windows.
-            logger.warning(
-                "registry: workspace %r (%s) has two live windows (ports %s, %s) — "
-                "routing to the later-started one; close the extra window",
-                key, instance.cwd or prior.cwd, prior.port, instance.port,
-            )
-
-        if cand > chosen_by_key[key]:
-            instances_by_key[key] = instance
-            chosen_by_key[key] = cand
+    # A window id names ONE live incarnation. Two live rows with the same id
+    # (a copied environment, a stale incarnation, a spoof) cannot both be that
+    # window, and the newer is not necessarily the right one: none of them gets
+    # the window key; each stays reachable per row and is flagged.
+    by_uid: dict[str, list[RuntimeInstance]] = {}
+    for _row, inst in rows:
+        if inst.window_uid:
+            by_uid.setdefault(inst.window_uid, []).append(inst)
+    instances: list[RuntimeInstance] = []
+    for _row, inst in rows:
+        if inst.window_uid and len(by_uid[inst.window_uid]) == 1:
+            agent = inst.agent if inst.agent in ("claude", "codex", "opencode", "mimo") else row_agent(_row)
+            inst = replace(inst, key=window_key(inst.row_id, inst.window_uid, (inst.host, inst.cwd, agent)))
+        elif inst.window_uid:
+            inst = replace(inst, uid_conflict=True)
+        instances.append(inst)
+    for uid, group in by_uid.items():
+        if len(group) > 1:
+            logger.warning("registry: %d live windows claim the same window id (ports %s) — "
+                           "each is addressable only by its own row", len(group),
+                           ", ".join(str(i.port) for i in group))
 
     # Reap rows we judged dead so the table doesn't grow without bound. (A live PID
     # probe already ran for any row without a fresh heartbeat, so this is safe.)
     if stale_ids:
         storage.delete_instances(stale_ids)
 
-    return _uniquify_display_names(
-        sorted(processes if keep_duplicates else instances_by_key.values(),
-               key=lambda i: (i.display_name.lower(), i.port))
-    )
+    return _uniquify_display_names(sorted(instances, key=lambda i: (i.display_name.lower(), i.host, i.cwd, i.port)))
+
+
+def instance_config(instance: RuntimeInstance) -> InstanceConfig:
+    return InstanceConfig(name=instance.key, host=instance.host, port=instance.port, auth_token=instance.auth_token,
+                          row_id=getattr(instance, "row_id", "") or "")
 
 
 def build_instance_configs(instances: list[RuntimeInstance]) -> list[InstanceConfig]:
-    return [
-        InstanceConfig(
-            name=instance.key,
-            host=instance.host,
-            port=instance.port,
-            auth_token=instance.auth_token,
-        )
-        for instance in instances
-    ]
+    return [instance_config(instance) for instance in instances]
 
 
 def _pid_exists(pid: int) -> bool:
@@ -351,14 +399,35 @@ def _row_is_stale(row: dict[str, Any], now: float, is_local: bool = True) -> boo
 
 
 def _uniquify_display_names(instances: list[RuntimeInstance]) -> list[RuntimeInstance]:
+    """Distinct labels for windows that share a name, so a person can pick the
+    right one: the folder (and host) tells them apart, a short row id when even
+    that repeats. Labels are for display only; nothing routes by them."""
     counts: dict[str, int] = {}
     for instance in instances:
         counts[instance.display_name] = counts.get(instance.display_name, 0) + 1
 
+    def place(i: RuntimeInstance) -> str:
+        tail = i.cwd.replace("\\", "/").rstrip("/").split("/")[-2:] if i.cwd else []
+        return f"{i.host} {'/'.join(tail)}".strip()
+
+    places: dict[tuple[str, str], int] = {}
+    for instance in instances:
+        k = (instance.display_name, place(instance))
+        places[k] = places.get(k, 0) + 1
+
     result: list[RuntimeInstance] = []
     for instance in instances:
-        if counts[instance.display_name] == 1:
+        if counts[instance.display_name] == 1 and not instance.uid_conflict:
             result.append(instance)
-        else:
-            result.append(replace(instance, display_name=f"{instance.display_name} [{instance.port}]"))
-    return result
+            continue
+        label = f"{instance.display_name} [{place(instance)}"
+        if places[(instance.display_name, place(instance))] > 1 or instance.uid_conflict:
+            label += f" #{instance.row_id[-4:]}"
+        label += "]" + (" ⚠️" if instance.uid_conflict else "")
+        result.append(replace(instance, display_name=label))
+    # Short row ids can still collide; then the full row id makes labels unique.
+    seen: dict[str, int] = {}
+    for instance in result:
+        seen[instance.display_name] = seen.get(instance.display_name, 0) + 1
+    return [replace(i, display_name=f"{i.display_name} #{i.row_id}") if seen[i.display_name] > 1 else i
+            for i in result]

@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 
 from bot.common import get_bridge_client, get_storage, refresh_instances
 from bot.i18n import t
-from bot.inject import deliver_slash_command
+from bot.inject import deliver_unattended_slash_command
 from bot.topics import resolve_workspace_id
 
 
@@ -85,27 +85,37 @@ async def compact_watch_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.warning('compact_watch: eligibility unavailable for %s; skipped', inst.key, exc_info=True)
             continue
 
-        # Reservation survives cancellation, timeout, process death and an
-        # accepted-but-unconfirmed injection. Token changes cannot re-arm it.
+        # Reservation survives cancellation, timeout, process death and every
+        # outcome, known or not: nothing here retries. Token changes cannot re-arm it.
         try:
-            ok, reason = await deliver_slash_command(context, instances, inst.key, '/compact')
+            outcome, reason = await deliver_unattended_slash_command(context, instances, inst.key, '/compact')
         except Exception:
             logger.warning('compact_watch: delivery to %s raised; attempt remains consumed', inst.key, exc_info=True)
             continue
-        if not ok:
-            logger.warning('compact_watch: delivery to %s failed: %s; attempt remains consumed', inst.key, reason)
-            continue
         idle = min(info['idle_s'], info['uptime_s'])
-        logger.info('compact_watch: sent /compact to %s (used=%d, idle=%.0fs)', inst.key, info['used'], idle)
+        logger.info('compact_watch: /compact to %s: %s %s (used=%d, idle=%.0fs); attempt consumed',
+                    inst.key, outcome, reason, info['used'], idle)
+        key = _NOTE_KEYS.get(outcome)
+        if key is None:
+            continue   # failed: nothing reached the window; the log has the reason
         try:
             await context.bot.send_message(
                 chat_id=chat_id, message_thread_id=thread_id,
-                text=t('compact.note_sent', tokens=info['used'] // 1000, hours=idle / 3600),
+                text=t(key, tokens=info['used'] // 1000, hours=idle / 3600),
                 rate_limit_args={'topic_activity': False},
             )
         except Exception:
             logger.debug('compact_watch: topic note failed for %s', inst.key, exc_info=True)
 
+
+# What the topic is told; only a confirmed run is called a compaction.
+_NOTE_KEYS = {
+    'confirmed': 'compact.note_sent',
+    'unconfirmed': 'compact.note_unconfirmed',
+    'as_text': 'compact.note_as_text',
+    'refused': 'compact.note_skipped_input',
+    'unsupported': 'compact.note_skipped_unsupported',
+}
 
 if __name__ == '__main__':
     assert should_compact(500_000, 9000, 10000, False, 400_000, 7200)

@@ -11,7 +11,7 @@ from bot.storage import Storage
 from bot.topics import forum_chat_id, resolve_workspace_id
 from bridge.client import ChannelPluginClient
 from bridge.protocol import make_request_id
-from bridge.registry import RuntimeInstance, load_runtime_instances
+from bridge.registry import RuntimeInstance, instance_config, load_runtime_instances
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,19 @@ def _chunk_text(text: str, limit: int) -> list[str]:
         out.append(rest)
     return out
 
+
+
+def _definitely_not_sent(exc: BaseException) -> bool:
+    """True only when the plugin provably did not accept the request: an unknown
+    target, a refused or failed connect, or a 4xx refusal (auth, bad request).
+    Timeouts, dropped connections and 5xx answers leave the outcome unknown."""
+    import httpx
+    if isinstance(exc, httpx.HTTPStatusError):
+        # A 4xx is the plugin refusing the request. A 5xx can come after a
+        # queued client (OpenCode/MiMo) already stored the message and then
+        # failed to notify, so it is not proof of non-delivery.
+        return 400 <= exc.response.status_code < 500
+    return isinstance(exc, (KeyError, httpx.ConnectError, httpx.ConnectTimeout, PermissionError))
 
 class InterWindowRouter:
     """Lets one window's Claude talk to another window's Claude via the bot.
@@ -81,10 +94,16 @@ class InterWindowRouter:
     async def list_windows(self, from_key: str = "") -> list[dict[str, str]]:
         """Live windows the caller can address (excluding itself)."""
         instances = load_runtime_instances(self._config, self._storage)
+        from bot.common import instances_named
+        own = instances_named(instances, from_key) if from_key else []
+        own_keys = {i.key for i in own} if len(own) == 1 else set()
+        # "name" is what a window passes to tell_window/ask_window: the label,
+        # which is unique among live windows (it names host and folder when two
+        # windows share a name).
         return [
-            {"name": i.key, "workspace": i.display_name}
+            {"name": i.display_name, "workspace": i.workspace_name or i.display_name}
             for i in instances
-            if i.key != from_key
+            if i.key not in own_keys
         ]
 
     async def _note_topic(self, instance: RuntimeInstance, header_html: str, body: str) -> None:
@@ -120,18 +139,21 @@ class InterWindowRouter:
             return {"ok": False, "reason": f"text too long (> {MAX_TEXT} chars)"}
 
         instances = load_runtime_instances(self._config, self._storage)
-        target = next((i for i in instances if i.key == to_name), None)
-        if target is None:
-            target = next((i for i in instances if i.key.lower() == to_name.lower()), None)
-        if target is None:
-            return {
-                "ok": False,
-                "reason": f"no live window named '{to_name}'",
-                "available": [i.key for i in instances if i.key != from_key],
-            }
-        if target.key == from_key:
+        from bot.common import instances_named
+        # Agents address windows by name; names repeat. One match: the target.
+        # None or several: refuse and list what can be addressed (labels name
+        # host and folder when names collide), never pick one.
+        named = instances_named(instances, to_name)
+        sources = instances_named(instances, from_key) if from_key else []
+        source = sources[0] if len(sources) == 1 else None
+        available = [i.display_name for i in instances if source is None or i.key != source.key]
+        if len(named) != 1:
+            reason = (f"no live window named '{to_name}'" if not named
+                      else f"'{to_name}' names {len(named)} live windows; address one by its label")
+            return {"ok": False, "reason": reason, "available": available}
+        target = named[0]
+        if source is not None and target.key == source.key:
             return {"ok": False, "reason": "a window can't message itself"}
-        source = next((i for i in instances if i.key == from_key), None)
 
         # Book the work BEFORE delivering, so the id can ride along in the prompt —
         # otherwise the target has nothing to address its task_* tools at. A 'tell'
@@ -139,14 +161,18 @@ class InterWindowRouter:
         # how the windows behave), so that closes their task instead of opening one.
         task_id: int | None = None
         try:
+            # Tasks stay keyed by window NAME: that is what a plugin asks for
+            # in /my-tasks (its workspace display name). Same-named windows
+            # share a task list; that is a known gap of the task store.
+            target_name = target.workspace_name or target.instance_name
             if kind == "tell" and from_key:
-                closed = self._storage.answer_open_ask(target.key, from_key, text)
+                closed = self._storage.answer_open_ask(target_name, from_key, text)
                 if closed is not None:
                     logger.info("interwindow task #%d answered by %s", closed, from_key)
                 else:
-                    task_id = self._storage.create_task(from_key, target.key, kind, text)
+                    task_id = self._storage.create_task(from_key, target_name, kind, text)
             else:
-                task_id = self._storage.create_task(from_key or "?", target.key, kind, text)
+                task_id = self._storage.create_task(from_key or "?", target_name, kind, text)
         except Exception:
             # Bookkeeping must never block delivery; the message matters more.
             logger.exception("interwindow task bookkeeping failed")
@@ -186,8 +212,16 @@ class InterWindowRouter:
             "text": delivered,
         }
         try:
-            await self._client.post_message(target.key, body)
+            # The window route() chose, not whoever holds its name in the
+            # client's own cache by the time the request is built.
+            await self._client.post_message(target.key, body, pinned=instance_config(target))
         except Exception as exc:
+            if not _definitely_not_sent(exc):
+                # The request may have reached the plugin (e.g. its 202 was lost).
+                # Saying "not delivered" would invite a second, duplicate send.
+                logger.warning("interwindow deliver to %s: outcome unknown: %s", target.key, exc)
+                return {"ok": False, "uncertain": True,
+                        "reason": f"no answer from {target.display_name}; the message may have been delivered: {exc}"}
             logger.warning("interwindow deliver to %s failed: %s", target.key, exc)
             # Do not leave the row sitting in `sent` for work that never arrived —
             # that would show up in /tasks as something the target is chewing on.
@@ -210,9 +244,9 @@ class InterWindowRouter:
         await self._note_topic(target, header, text)
         if source is not None:
             if kind == "ask":
-                header = t("iw.topic_outgoing_ask", name=html.escape(target.key))
+                header = t("iw.topic_outgoing_ask", name=html.escape(target.display_name))
             else:
-                header = t("iw.topic_outgoing_tell", name=html.escape(target.key))
+                header = t("iw.topic_outgoing_tell", name=html.escape(target.display_name))
             await self._note_topic(source, header, text)
 
         logger.info("interwindow route %s -> %s (%s) len=%d", from_key or "?", target.key, kind, len(text))

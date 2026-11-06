@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from bridge.protocol import PingResult, WindowStatus
+from bridge.transport import DialMap
 
 
 logger = logging.getLogger(__name__)
+# Codex thread ids as the launchers accept them (they reach a shell command line).
+_THREAD_ID = re.compile(r"[A-Za-z0-9_-]{1,160}")
 
 
 @dataclass(slots=True)
@@ -19,6 +23,17 @@ class InstanceConfig:
     host: str
     port: int
     auth_token: str
+    # The registry row this endpoint was resolved from. A pinned request sends
+    # it, and a plugin that is a different process (a new window on a reused
+    # port) refuses. The bot scopes remote ids as "<ip>#<id>"; the plugin
+    # knows only <id>.
+    row_id: str = ""
+
+
+def _row_header(instance: InstanceConfig | None) -> dict[str, str]:
+    if instance is None or not instance.row_id:
+        return {}
+    return {"X-PolyDaemon-Row": instance.row_id.rsplit("#", 1)[-1]}
 
 
 class ChannelPluginClient:
@@ -36,10 +51,13 @@ class ChannelPluginClient:
         instances: list[InstanceConfig],
         ping_timeout: float = 5.0,
         post_timeout: float = 10.0,
+        transport_routes: dict[str, int] | None = None,
+        transport_direct_hosts: list[str] | None = None,
     ) -> None:
         self._instances: dict[str, InstanceConfig] = {}
         self._ping_timeout = ping_timeout
         self._post_timeout = post_timeout
+        self._dial = DialMap(transport_routes, transport_direct_hosts)
         # Lazy: created on first use inside the event loop. Constructing
         # httpx.AsyncClient before run_polling() boots the loop occasionally
         # left the anyio backend in a state that hung the FIRST job (no logs,
@@ -50,8 +68,11 @@ class ChannelPluginClient:
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient()
+            self._client = httpx.AsyncClient(trust_env=False)
         return self._client
+
+    def _instance_url(self, instance: InstanceConfig, path: str) -> str:
+        return self._dial.url(f"http://{instance.host}:{instance.port}{path}")
 
     def sync_instances(
         self, instances: list[InstanceConfig], *,
@@ -70,13 +91,19 @@ class ChannelPluginClient:
             logger.debug("aclose failed", exc_info=True)
         self._client = None
 
-    async def post_message(self, instance_name: str, body: dict[str, Any]) -> None:
-        """Fire-and-forget POST /message. Raises on auth failure or connection error."""
-        instance = self._get_instance(instance_name)
+    async def post_message(
+        self, instance_name: str, body: dict[str, Any], *, pinned: InstanceConfig | None = None,
+    ) -> None:
+        """Fire-and-forget POST /message. Raises on auth failure or connection error.
+
+        ``pinned`` sends to that exact process instead of whichever one holds the
+        name when the request is built: names are workspace names, and between
+        choosing a window and sending, a same-named window elsewhere can take it."""
+        instance = pinned or self._get_instance(instance_name)
         resp = await self._get_client().post(
-            f"http://{instance.host}:{instance.port}/message",
+            self._instance_url(instance, "/message"),
             json=body,
-            headers={"Authorization": f"Bearer {instance.auth_token}"},
+            headers={"Authorization": f"Bearer {instance.auth_token}", **_row_header(pinned)},
             timeout=self._post_timeout,
         )
         if resp.status_code == 401:
@@ -87,7 +114,7 @@ class ChannelPluginClient:
         """Notify an exact live process, including siblings with their own pending prompts."""
         try:
             response = await self._get_client().post(
-                f"http://{instance.host}:{instance.port}/topic-activity", json=body,
+                self._instance_url(instance, "/topic-activity"), json=body,
                 headers={"Authorization": f"Bearer {instance.auth_token}"}, timeout=self._ping_timeout,
             )
             if response.status_code != 404:  # older plugins simply lack this feature
@@ -95,7 +122,46 @@ class ChannelPluginClient:
         except Exception:
             logger.debug("topic activity delivery failed; registry and decisions unchanged")
 
-    async def post_launch(self, agent_url: str, token: str, name: str, cwd: str = "", agent: str = "claude", new_session: bool = False) -> None:
+    async def launch_supports_thread(self, agent_url: str) -> bool:
+        """Whether this machine's launch-agent can resume an exact Codex thread
+        (`thread_resume` in /health). An older agent would ignore `thread_id` and
+        fall back to the folder lookup, so /restart asks before closing anything."""
+        agent_url = self._dial.url(agent_url)
+        try:
+            health = await self._get_client().get(f"{agent_url.rstrip('/')}/health", timeout=self._post_timeout)
+            health.raise_for_status()
+            return health.json().get("thread_resume") is True
+        except Exception as exc:
+            logger.debug("launch-agent health %s failed: %s", agent_url, exc)
+            return False
+
+    async def get_codex_thread(self, instance_name: str) -> tuple[str | None, str]:
+        """GET /codex-thread — the Codex thread bound to that window (agentd's
+        window binding, see agent/codex-bindings.ts). Returns (thread_id, '') or
+        (None, reason). Never a "newest thread in the folder" guess."""
+        instance = self._instances.get(instance_name)
+        if instance is None:
+            return None, "window not found"
+        try:
+            resp = await self._get_client().get(
+                self._instance_url(instance, "/codex-thread"),
+                headers={"Authorization": f"Bearer {instance.auth_token}"},
+                timeout=25.0,
+            )
+            if resp.status_code == 404:
+                return None, "window plugin too old to report its Codex thread"
+            data = resp.json()
+        except Exception as exc:
+            return None, f"window unreachable: {exc}"
+        thread = data.get("thread_id") if isinstance(data, dict) else None
+        if not isinstance(data, dict) or data.get("ok") is not True:
+            return None, str((data or {}).get("reason") or f"HTTP {resp.status_code}")[:300]
+        if not isinstance(thread, str) or not _THREAD_ID.fullmatch(thread):
+            return None, "window has no Codex thread yet"
+        return thread, ""
+
+    async def post_launch(self, agent_url: str, token: str, name: str, cwd: str = "", agent: str = "claude", new_session: bool = False,
+                          thread_id: str = "") -> None:
         """POST /launch to a machine's launch-agent (clients/launch-agent.ts).
 
         Used when the bot runs apart from the workspaces (e.g. on the bot host while
@@ -107,6 +173,9 @@ class ChannelPluginClient:
         ignores the extra field and searches as before."""
         if agent not in ("claude", "codex", "opencode", "mimo") or not isinstance(new_session, bool):
             raise ValueError("invalid launch agent or session mode")
+        if thread_id and (agent != "codex" or new_session or not _THREAD_ID.fullmatch(thread_id)):
+            raise ValueError("invalid thread selection")
+        agent_url = self._dial.url(agent_url)
         # Old launch agents silently ignore new fields and would start Claude.
         if agent != "claude" or new_session:
             health = await self._get_client().get(f"{agent_url.rstrip('/')}/health", timeout=self._post_timeout)
@@ -114,9 +183,14 @@ class ChannelPluginClient:
             capabilities = health.json()
             if agent not in capabilities.get("agents", []) or (new_session and capabilities.get("new_session") is not True):
                 raise RuntimeError("Update this machine's PolyDaemon launch-agent before selecting an agent or new session")
+            if thread_id and capabilities.get("thread_resume") is not True:
+                raise RuntimeError("This machine's launch-agent cannot resume an exact Codex thread")
+        body = {"name": name, "cwd": cwd, "agent": agent, "new_session": new_session}
+        if thread_id:
+            body["thread_id"] = thread_id
         resp = await self._get_client().post(
             f"{agent_url.rstrip('/')}/launch",
-            json={"name": name, "cwd": cwd, "agent": agent, "new_session": new_session},
+            json=body,
             headers={"Authorization": f"Bearer {token}"},
             timeout=100.0,  # the launcher may handle startup prompts for up to 90s
         )
@@ -133,36 +207,60 @@ class ChannelPluginClient:
         if resp.json().get("ok") is not True:
             raise RuntimeError("launch-agent did not confirm launcher completion")
 
-    async def post_inject(self, instance_name: str, text: str) -> tuple[bool, str]:
+    async def post_inject(
+        self, instance_name: str, text: str, *, pinned: InstanceConfig | None = None,
+    ) -> tuple[bool, str]:
         """POST /inject — type an in-session slash command (e.g. "/effort high")
         into the window's claude TUI.
 
         For REMOTE windows the bot can't AttachConsole (that's local-only), but the
-        plugin is co-located with its claude process (its parent) and runs
-        inject-keys.ps1 for us. Returns ``(ok, reason)``; ``reason`` carries the
-        plugin's explanation on failure (e.g. an unsupported platform, or the script
-        missing) so the caller can surface it. Never raises."""
-        instance = self._instances.get(instance_name)
+        plugin is co-located with its claude process (its parent) and types it for
+        us. Returns ``(ok, reason)``; ``ok`` means the keys were typed, not that the
+        command ran (see ``post_inject_outcome``). ``reason`` carries the plugin's
+        explanation on failure so the caller can surface it. Never raises."""
+        outcome, reason = await self.post_inject_outcome(instance_name, text, pinned=pinned)
+        return outcome in ("confirmed", "unconfirmed"), reason
+
+    async def post_inject_outcome(
+        self, instance_name: str, text: str, *, pinned: InstanceConfig | None = None,
+        require_empty_prompt: bool = False,
+    ) -> tuple[str, str]:
+        """Like ``post_inject``, with what came of it: ``confirmed`` (the window's
+        transcript shows the command running), ``unconfirmed`` (typed, outcome
+        unknown — also every plugin too old to tell), ``as_text`` (it reached the
+        model as a prompt), ``refused`` (nothing typed: the prompt held input),
+        ``unsupported`` (``require_empty_prompt`` and the terminal cannot show the
+        input) or ``failed``. Never raises."""
+        instance = pinned or self._instances.get(instance_name)
         if instance is None:
-            return False, "instance not registered"
+            return "failed", "instance not registered"
+        body: dict[str, Any] = {"text": text}
+        if require_empty_prompt:
+            body["require_empty_prompt"] = True
         try:
             resp = await self._get_client().post(
-                f"http://{instance.host}:{instance.port}/inject",
-                json={"text": text},
-                headers={"Authorization": f"Bearer {instance.auth_token}"},
+                self._instance_url(instance, "/inject"),
+                json=body,
+                headers={"Authorization": f"Bearer {instance.auth_token}", **_row_header(pinned)},
                 timeout=self._post_timeout,
             )
-            if resp.status_code == 200:
-                return True, ""
-            reason = ""
+            data: dict[str, Any] = {}
             try:
-                reason = str((resp.json() or {}).get("reason") or "")
+                data = resp.json() or {}
             except Exception:
-                reason = ""
-            return False, reason or f"HTTP {resp.status_code}"
+                data = {}
+            reason = str(data.get("reason") or "")
+            outcome = str(data.get("outcome") or "")
+            if resp.status_code == 200:
+                return (outcome if outcome in ("confirmed", "unconfirmed") else "unconfirmed"), reason
+            if outcome in ("as_text", "refused", "unsupported"):
+                return outcome, reason
+            # A plugin too old to know require_empty_prompt typed nothing only if it
+            # failed; it never reports refusals, so anything else is a failure.
+            return "failed", reason or f"HTTP {resp.status_code}"
         except Exception as exc:
             logger.debug("inject %s failed: %s", instance_name, exc)
-            return False, str(exc)
+            return "failed", str(exc)
 
     async def get_agent_version(self, agent_url: str, token: str) -> dict[str, Any] | None:
         """GET /version from a machine's launch-agent: its checkout's commit,
@@ -170,7 +268,7 @@ class ChannelPluginClient:
         or too old to have the endpoint."""
         try:
             resp = await self._get_client().get(
-                f"{agent_url.rstrip('/')}/version",
+                self._dial.url(f"{agent_url.rstrip('/')}/version"),
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=20.0,   # it runs git and install.py --check
             )
@@ -184,7 +282,7 @@ class ChannelPluginClient:
         must already be in its upstream) and re-register the hooks. Returns the
         agent's step-by-step answer; raises when the agent cannot be reached."""
         resp = await self._get_client().post(
-            f"{agent_url.rstrip('/')}/update",
+            self._dial.url(f"{agent_url.rstrip('/')}/update"),
             json={"sha": sha},
             headers={"Authorization": f"Bearer {token}"},
             timeout=240.0,   # a git fetch over a slow link, then install.py
@@ -205,7 +303,7 @@ class ChannelPluginClient:
             return None
         try:
             resp = await self._get_client().get(
-                f"http://{instance.host}:{instance.port}/context",
+                self._instance_url(instance, "/context"),
                 headers={"Authorization": f"Bearer {instance.auth_token}"},
                 timeout=self._ping_timeout,
             )
@@ -232,13 +330,17 @@ class ChannelPluginClient:
             logger.debug("context %s failed: %s", instance_name, exc)
             return None
 
-    async def post_approve_callback(self, instance_name: str, approval_id: str, action: str) -> bool:
+    async def post_approve_callback(self, instance_name: str, approval_id: str, action: str,
+                                    *, pinned: InstanceConfig | None = None) -> bool:
         """POST /approve-callback. Returns True if the plugin accepted the resolution."""
-        return await self._post_decision(instance_name, "/approve-callback", {"id": approval_id, "action": action})
+        return await self._post_decision(instance_name, "/approve-callback", {"id": approval_id, "action": action},
+                                         pinned=pinned)
 
-    async def post_plan_callback(self, instance_name: str, plan_id: str, action: str) -> bool:
+    async def post_plan_callback(self, instance_name: str, plan_id: str, action: str,
+                                 *, pinned: InstanceConfig | None = None) -> bool:
         """POST /plan-callback. ``action`` is ``"apply"`` or ``"decline"``."""
-        return await self._post_decision(instance_name, "/plan-callback", {"id": plan_id, "action": action})
+        return await self._post_decision(instance_name, "/plan-callback", {"id": plan_id, "action": action},
+                                         pinned=pinned)
 
     async def post_ask_action(
         self,
@@ -248,6 +350,7 @@ class ChannelPluginClient:
         action: str | None = None,
         option_idx: int | None = None,
         text: str | None = None,
+        pinned: InstanceConfig | None = None,
     ) -> bool:
         """POST /ask-callback for an AskUserQuestion event.
 
@@ -265,14 +368,15 @@ class ChannelPluginClient:
             body["idx"] = option_idx
         if text is not None:
             body["text"] = text
-        return await self._post_decision(instance_name, "/ask-callback", body)
+        return await self._post_decision(instance_name, "/ask-callback", body, pinned=pinned)
 
-    async def _post_decision(self, instance_name: str, path: str, body: dict[str, object]) -> bool:
+    async def _post_decision(self, instance_name: str, path: str, body: dict[str, object],
+                             pinned: InstanceConfig | None = None) -> bool:
         async def send(instance: InstanceConfig) -> bool:
             try:
                 resp = await self._get_client().post(
-                    f"http://{instance.host}:{instance.port}{path}", json=body,
-                    headers={"Authorization": f"Bearer {instance.auth_token}"},
+                    self._instance_url(instance, path), json=body,
+                    headers={"Authorization": f"Bearer {instance.auth_token}", **_row_header(instance)},
                     timeout=self._post_timeout,
                 )
                 return resp.status_code == 200
@@ -280,18 +384,13 @@ class ChannelPluginClient:
                 logger.debug("%s %s:%s failed: %s", path, instance.host, instance.port, exc)
                 return False
 
-        primary = self._instances.get(instance_name)
+        # Only the process that issued the prompt id may act on it: send to that
+        # exact row (pinned by X-PolyDaemon-Row), never to other processes that
+        # happen to share the key.
+        primary = pinned or self._instances.get(instance_name)
         if primary is None:
             return False
-        if await send(primary):
-            return True
-        # Normal messages still go to the selected window. Only prompt-id-based
-        # decisions probe its siblings; non-owners reject an unknown id with 404.
-        siblings = {
-            (i.host, i.port): i for i in self._decision_instances
-            if i.name == instance_name and (i.host, i.port) != (primary.host, primary.port)
-        }
-        return any(await asyncio.gather(*(send(i) for i in siblings.values())))
+        return await send(primary)
 
     async def get_status(
         self,
@@ -305,7 +404,7 @@ class ChannelPluginClient:
             return None
         try:
             resp = await self._get_client().get(
-                f"http://{instance.host}:{instance.port}/status",
+                self._instance_url(instance, "/status"),
                 headers={"Authorization": f"Bearer {instance.auth_token}"},
                 timeout=timeout if timeout is not None else self._ping_timeout,
             )
@@ -342,7 +441,7 @@ class ChannelPluginClient:
             return None
         try:
             resp = await self._get_client().get(
-                f"http://{instance.host}:{instance.port}/ping",
+                self._instance_url(instance, "/ping"),
                 headers={"Authorization": f"Bearer {instance.auth_token}"},
                 timeout=timeout if timeout is not None else self._ping_timeout,
             )

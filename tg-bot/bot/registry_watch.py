@@ -59,7 +59,9 @@ async def broadcast_changes_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cleanup_routes_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     storage = context.application.bot_data["storage"]
-    removed = storage.cleanup_old_routes(max_age_hours=24.0)
+    # Kept for 30 days: a reply to an older message whose route was already
+    # deleted could only fall back to the active window (another workspace).
+    removed = storage.cleanup_old_routes(max_age_hours=30 * 24.0)
     if removed:
         logger.info("cleaned up %d old message routes", removed)
 

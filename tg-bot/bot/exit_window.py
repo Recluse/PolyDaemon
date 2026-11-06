@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from bot.callback_data import CB_EXIT, CB_RESTART
 from bot.common import (
+    CONFIRM_TTL_S,
+    take_confirmation,
+    remember_confirmation,
     find_instance,
     get_bridge_client,
     get_display_name,
@@ -18,7 +22,7 @@ from bot.common import (
 )
 from bot.i18n import t
 from bot.inject import deliver_slash_command
-from bot.launcher import launch_workspace
+from bot.launcher import can_resume_thread, launch_workspace
 from bot.topics import instance_agent
 
 
@@ -45,12 +49,13 @@ async def exit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     target = resolve_topic_target(update, context, runtime_instances, user_id)
     display = get_display_name(context, target)
-    await reply(
+    sent = await reply(
         update, context,
         t("exit.confirm", display=display),
         parse_mode="HTML",
         reply_markup=_confirm_keyboard(),
     )
+    remember_confirmation(context, sent, "exit", target, runtime_instances)
 
 
 async def exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -74,11 +79,13 @@ async def exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.answer(t("common.unknown_action"), show_alert=True)
         return
 
-    user_id = get_user_id(update)
     runtime_instances = refresh_instances(context)
-    # Re-resolve from the topic the confirm sits in (the confirm was sent into the
-    # window's topic), so we close the window the user was looking at.
-    target = resolve_topic_target(update, context, runtime_instances, user_id)
+    # The window the confirmation was shown for (that exact process), never a
+    # re-resolution: the topic or the active window may mean another one now.
+    target = take_confirmation(context, query.message, "exit", runtime_instances)
+    if target is None:
+        await query.answer(t("cb.confirmation_stale"), show_alert=True)
+        return
     display = get_display_name(context, target)
 
     # Same transport as /effort: type "/exit" into the window's claude TUI —
@@ -102,6 +109,22 @@ async def exit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception:
         pass
     logger.info("exit sent instance=%s", target)
+
+
+async def _codex_thread(context: ContextTypes.DEFAULT_TYPE, inst) -> tuple[str, str]:
+    """('', '') for a non-Codex window. For Codex: the thread BOUND to this
+    window (from its plugin, which asks agentd) and that the launcher on its
+    machine can resume exactly it — else ('', reason). Asked before /exit: a
+    relaunch without the thread would fall back to the folder lookup, and with
+    two windows or child threads in one folder that is the wrong history."""
+    if instance_agent(inst) != "codex":
+        return "", ""
+    thread, reason = await get_bridge_client(context).get_codex_thread(inst.key)
+    if not thread:
+        return "", reason or "no bound thread"
+    if not await can_resume_thread(context, inst.cwd):
+        return "", "this machine's launcher cannot resume an exact Codex thread"
+    return thread, ""
 
 
 async def _wait_until_gone(context: ContextTypes.DEFAULT_TYPE, key: str) -> bool:
@@ -144,12 +167,13 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     target = resolve_topic_target(update, context, runtime_instances, user_id)
     display = get_display_name(context, target)
-    await reply(
+    sent = await reply(
         update, context,
         t("exit.restart_confirm", display=display),
         parse_mode="HTML",
         reply_markup=_restart_confirm_keyboard(),
     )
+    remember_confirmation(context, sent, "restart", target, runtime_instances)
 
 
 async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -170,33 +194,50 @@ async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             pass
         return
     if action in ("all", "stale"):
-        await query.answer()
         message = query.message
         if message is None:
             return
+        store = context.application.bot_data.setdefault("confirmations", {})
+        entry = store.pop((int(message.chat_id), int(message.message_id)), None)
+        want = "restart_stale" if action == "stale" else "restart_all"
+        if entry is None or entry[0] != want or time.time() - entry[2] > CONFIRM_TTL_S:
+            await query.answer(t("cb.confirmation_stale"), show_alert=True)
+            return
+        await query.answer()
         await query.edit_message_text(t("exit.restart_all_started"), parse_mode="HTML")
         # In the background: one window takes ~15 s, twenty take minutes, and a
         # callback handler must not hold the update for that long.
         context.application.create_task(
-            _restart_all_run(context, message.chat_id, message.message_id, only_stale=action == "stale")
+            _restart_all_run(context, message.chat_id, message.message_id, only_stale=action == "stale",
+                             confirmed_rows=set(entry[1]))
         )
         return
     if action != "go":
         await query.answer(t("common.unknown_action"), show_alert=True)
         return
 
-    user_id = get_user_id(update)
     runtime_instances = refresh_instances(context)
-    target = resolve_topic_target(update, context, runtime_instances, user_id)
+    target = take_confirmation(context, query.message, "restart", runtime_instances)
+    if target is None:
+        await query.answer(t("cb.confirmation_stale"), show_alert=True)
+        return
     inst = find_instance(runtime_instances, target)
     if inst is None:
         await query.answer(t("common.window_not_found"), show_alert=True)
         return
     display = get_display_name(context, target)
-    # The folder NAME for the relaunch = workspace_name (== inst.key), which the
-    # plugin computed as basename(cwd) on its own host. Don't os.path.basename the
-    # cwd here — the bot runs on Linux and the cwd is a Windows path (no '/' to split).
-    name = target
+    thread_id = ""
+    if instance_agent(inst) == "codex":
+        thread_id, why = await _codex_thread(context, inst)
+        if not thread_id:
+            logger.warning("restart: codex window %s has no resumable bound thread: %s", target, why)
+            await query.answer(t("exit.restart_codex_unbound", reason=why), show_alert=True)
+            return
+    # The folder NAME for the relaunch = the workspace_name the plugin registered
+    # (basename(cwd) on its own host). Not the window key, which is an identity
+    # token. Don't os.path.basename the cwd here — the bot runs on Linux and the
+    # cwd is a Windows path (no '/' to split).
+    name = inst.workspace_name or inst.instance_name
 
     # 1) Close it — inject claude's /exit. Needs the window's plugin to expose
     #    /inject (remote windows). If that fails we must NOT launch (the old window
@@ -236,7 +277,10 @@ async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     #    more than one machine. The cwd was captured above, before /exit, while the
     #    window was still listed.
     try:
-        await launch_workspace(context, name, inst.cwd, instance_agent(inst))
+        if thread_id:
+            await launch_workspace(context, name, inst.cwd, instance_agent(inst), thread_id=thread_id)
+        else:
+            await launch_workspace(context, name, inst.cwd, instance_agent(inst))
     except Exception as exc:
         logger.exception("restart: launch failed name=%r", name)
         try:
@@ -340,16 +384,22 @@ async def _restart_all_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE
                              callback_data=f"{CB_RESTART}:{'stale' if only_stale else 'all'}"),
         InlineKeyboardButton(t("exit.btn_cancel"), callback_data=f"{CB_RESTART}:cancel"),
     ]])
-    await reply(
+    sent = await reply(
         update, context,
         t("exit.restart_all_confirm", count=len(idle), names=_names(idle), skipped=skipped),
         parse_mode="HTML",
         reply_markup=keyboard,
     )
+    # The confirmation covers exactly the windows listed now (by registry row),
+    # once: see common.remember_confirmation for the rules.
+    if sent is not None:
+        store = context.application.bot_data.setdefault("confirmations", {})
+        store[(int(sent.chat_id), int(sent.message_id))] = (
+            "restart_stale" if only_stale else "restart_all", tuple(i.row_id for i in idle), time.time(), "")
 
 
 async def _restart_all_run(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int,
-                           only_stale: bool = False) -> None:
+                           only_stale: bool = False, confirmed_rows: set[str] | None = None) -> None:
     async def status(text: str) -> None:
         try:
             await context.bot.edit_message_text(
@@ -361,12 +411,28 @@ async def _restart_all_run(context: ContextTypes.DEFAULT_TYPE, chat_id: int, mes
     # Sort AGAIN, now: minutes may have passed since the confirm, and a window that
     # was quiet then may be working now.
     idle, busy, unknown = await _sort_windows(context, await _candidates(context, only_stale))
+    if confirmed_rows is not None:
+        # Only windows that were on the confirmed list: a window that appeared
+        # since was not confirmed by anyone.
+        idle = [i for i in idle if i.row_id in confirmed_rows]
     done, failed = [], []
     for n, inst in enumerate(idle, 1):
         await status(t("exit.restart_all_progress", i=n, n=len(idle), name=inst.display_name))
         current = refresh_instances(context)
-        if find_instance(current, inst.key) is None:
+        live = find_instance(current, inst.key)
+        if live is None:
             continue                         # closed on its own meanwhile
+        # A reconnected plugin keeps the key (same uid and scope) but is a new
+        # registry row: it was not the process that was confirmed.
+        if live.row_id != inst.row_id:
+            failed.append(f"{inst.display_name} ({t('exit.reconnected')})")
+            continue
+        thread_id = ""
+        if instance_agent(inst) == "codex":
+            thread_id, why = await _codex_thread(context, inst)
+            if not thread_id:
+                failed.append(f"{inst.display_name} ({why})")
+                continue
         ok, reason = await deliver_slash_command(context, current, inst.key, "/exit")
         if not ok:
             failed.append(f"{inst.display_name} ({reason or t('common.window_unavailable')})")
@@ -375,7 +441,11 @@ async def _restart_all_run(context: ContextTypes.DEFAULT_TYPE, chat_id: int, mes
             failed.append(f"{inst.display_name} ({t('exit.still_open')})")
             continue
         try:
-            await launch_workspace(context, inst.key, inst.cwd, instance_agent(inst))
+            if thread_id:
+                await launch_workspace(context, inst.workspace_name or inst.instance_name, inst.cwd,
+                                       instance_agent(inst), thread_id=thread_id)
+            else:
+                await launch_workspace(context, inst.workspace_name or inst.instance_name, inst.cwd, instance_agent(inst))
             done.append(inst.display_name)
         except Exception as exc:
             logger.exception("restart all: launch failed name=%r", inst.key)
@@ -411,11 +481,11 @@ if __name__ == "__main__":  # self-check: PYTHONPATH=tg-bot python3 tg-bot/bot/e
     from bot import i18n as _i18n
     _i18n.configure({"bot": {"locale": "en"}})
 
-    win_ok = _NS(key="api", display_name="api", cwd="C:\\projects\\api")
-    mac_ok = _NS(key="web", display_name="web", cwd="/Users/me/Work/web")
-    stuck = _NS(key="stuck", display_name="stuck", cwd="/Users/me/Work/stuck")
-    working = _NS(key="busy1", display_name="busy1", cwd="/Users/me/Work/busy1")
-    wontclose = _NS(key="wontclose", display_name="wontclose", cwd="/Users/me/Work/wc")
+    win_ok = _NS(key="api", display_name="api", instance_name="api", cwd="C:\\projects\\api")
+    mac_ok = _NS(key="web", display_name="web", instance_name="web", cwd="/Users/me/Work/web")
+    stuck = _NS(key="stuck", display_name="stuck", instance_name="stuck", cwd="/Users/me/Work/stuck")
+    working = _NS(key="busy1", display_name="busy1", instance_name="busy1", cwd="/Users/me/Work/busy1")
+    wontclose = _NS(key="wontclose", display_name="wontclose", instance_name="wontclose", cwd="/Users/me/Work/wc")
     live = {w.key: w for w in (win_ok, mac_ok, stuck, working, wontclose)}
 
     exits, launches, edits = [], [], []
@@ -430,7 +500,7 @@ if __name__ == "__main__":  # self-check: PYTHONPATH=tg-bot python3 tg-bot/bot/e
         live.pop(key, None)                  # it closes
         return True, ""
 
-    async def fake_launch(context, name, cwd=""):
+    async def fake_launch(context, name, cwd="", kind="claude", **kw):
         launches.append((name, cwd))
 
     async def fake_wait(context, key):

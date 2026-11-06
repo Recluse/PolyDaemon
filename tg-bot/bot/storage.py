@@ -102,6 +102,20 @@ CREATE TABLE IF NOT EXISTS compact_topics (
 """
 
 
+# Lives in bot.db itself, so it binds EVERY writer of the file, including
+# plugins older than this code (they write routes with INSERT OR REPLACE and no
+# identity columns): an insert for a (chat, message) that already has a route
+# owned by a row is skipped unless it comes from that same row. A route is never
+# moved to another window, nor stripped of its identity. Same text in
+# channel-plugin/src/routes-db.ts.
+ROUTE_KEEP_TRIGGER = (
+    "CREATE TRIGGER IF NOT EXISTS message_routes_keep_owner BEFORE INSERT ON message_routes "
+    "WHEN EXISTS (SELECT 1 FROM message_routes m WHERE m.chat_id = NEW.chat_id "
+    "AND m.message_id = NEW.message_id AND m.row_id IS NOT NULL AND m.row_id IS NOT NEW.row_id) "
+    "BEGIN SELECT RAISE(IGNORE); END"
+)
+
+
 class Storage:
     """Thin SQLite gateway shared by the Python bot and (read-only) channel plugin.
 
@@ -121,13 +135,37 @@ class Storage:
         self._conn.executescript(_SCHEMA)
         self._migrate()
 
+    # Columns added after the first release, per table. NULL in rows written by
+    # older code (or older plugins, which write bot.db directly with their own
+    # column list): readers must treat NULL as "unknown", never as a match.
+    _ADDED_COLUMNS = {
+        "window_topics": (("icon_emoji", "TEXT"), ("status", "TEXT")),
+        # Window identity (launcher-minted TG_WINDOW_UID) and the agent the
+        # plugin reports, so neither has to be guessed from the display name.
+        "instances": (("window_uid", "TEXT"), ("agent", "TEXT")),
+        # The identity a route was recorded for: the incarnation (row id), the
+        # window, and its scope (host, cwd, agent), kept here because the
+        # instance row is deleted when that window goes away.
+        "message_routes": (("row_id", "TEXT"), ("window_uid", "TEXT"), ("scope_host", "TEXT"),
+                           ("scope_cwd", "TEXT"), ("scope_agent", "TEXT")),
+    }
+
     def _migrate(self) -> None:
-        """Idempotent column adds for DBs created before a column existed."""
-        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(window_topics)")}
-        if "icon_emoji" not in cols:
-            self._conn.execute("ALTER TABLE window_topics ADD COLUMN icon_emoji TEXT")
-        if "status" not in cols:
-            self._conn.execute("ALTER TABLE window_topics ADD COLUMN status TEXT")
+        """Idempotent column adds for DBs created before a column existed. One
+        transaction: a crash midway leaves either every column or none."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for table, columns in self._ADDED_COLUMNS.items():
+                    have = {row[1] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+                    for name, kind in columns:
+                        if name not in have:
+                            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+                self._conn.execute(ROUTE_KEEP_TRIGGER)
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     # ----- sessions -----
 
@@ -151,25 +189,71 @@ class Storage:
 
     # ----- message routes -----
 
-    def lookup_route(self, chat_id: int, message_id: int) -> str | None:
+    def lookup_route(self, chat_id: int, message_id: int) -> dict | None:
+        """The identity a message was recorded for: {instance (legacy name),
+        row_id, window_uid, scope_host, scope_cwd, scope_agent}; unknown parts
+        are None. Routes written by older code carry only the name."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT instance FROM message_routes WHERE chat_id=? AND message_id=?",
+                "SELECT instance, row_id, window_uid, scope_host, scope_cwd, scope_agent "
+                "FROM message_routes WHERE chat_id=? AND message_id=?",
                 (int(chat_id), int(message_id)),
             ).fetchone()
-        return str(row[0]) if row else None
+        if not row:
+            return None
+        keys = ("instance", "row_id", "window_uid", "scope_host", "scope_cwd", "scope_agent")
+        return {k: (str(v) if v not in (None, "") else None) for k, v in zip(keys, row)}
 
-    def record_message_route(self, chat_id: int, message_id: int, instance: str) -> None:
-        """Map a (chat_id, message_id) → instance so a Telegram native reply/
+    def record_message_route(self, chat_id: int, message_id: int, instance: str,
+                             identity: dict | None = None) -> None:
+        """Map a (chat_id, message_id) → window so a Telegram native reply/
         reaction routes back to the originating window. Mirrors the plugin's
         local-write path (routes-db.ts recordMessageRoute) for REMOTE plugins
-        that can't write this DB; the bot writes it on their behalf via /route."""
+        that can't write this DB; the bot writes it on their behalf via /route.
+        ``identity`` = {row_id, window_uid, scope_host, scope_cwd, scope_agent}."""
+        ident = identity or {}
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO message_routes(chat_id, message_id, instance, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (int(chat_id), int(message_id), str(instance), time.time()),
+                "INSERT OR REPLACE INTO message_routes(chat_id, message_id, instance, created_at, "
+                "row_id, window_uid, scope_host, scope_cwd, scope_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (int(chat_id), int(message_id), str(instance), time.time(),
+                 ident.get("row_id"), ident.get("window_uid"), ident.get("scope_host"),
+                 ident.get("scope_cwd"), ident.get("scope_agent")),
             )
+
+    def record_message_route_once(self, chat_id: int, message_id: int, instance: str,
+                                  identity: dict | None = None) -> bool:
+        """Record a route unless the message is already routed to another window
+        (another row id or name). Check and write are one SQLite write
+        transaction (BEGIN IMMEDIATE), so two concurrent claims cannot both
+        succeed, whether they come through this object or through another
+        connection to the same file (a local plugin writes it directly).
+        Re-recording the same window (a message edit) succeeds. Returns False
+        when refused."""
+        ident = identity or {}
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._conn.execute(
+                    "SELECT instance, row_id FROM message_routes WHERE chat_id=? AND message_id=?",
+                    (int(chat_id), int(message_id)),
+                ).fetchone()
+                if row is not None and (row[0] != str(instance) or (row[1] or None) != ident.get("row_id")):
+                    self._conn.execute("ROLLBACK")
+                    return False
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO message_routes(chat_id, message_id, instance, created_at, "
+                    "row_id, window_uid, scope_host, scope_cwd, scope_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (int(chat_id), int(message_id), str(instance), time.time(),
+                     ident.get("row_id"), ident.get("window_uid"), ident.get("scope_host"),
+                     ident.get("scope_cwd"), ident.get("scope_agent")),
+                )
+                self._conn.execute("COMMIT")
+            except BaseException:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
+        return True
 
     def cleanup_old_routes(self, max_age_hours: float = 24.0) -> int:
         cutoff = time.time() - max_age_hours * 3600
@@ -348,6 +432,7 @@ class Storage:
     _INSTANCE_COLS = (
         "id", "host", "port", "auth_token", "instance_name",
         "workspace_name", "cwd", "pid", "parent_pid", "started_at", "heartbeat_at",
+        "window_uid", "agent",
     )
 
     def get_instances(self) -> list[dict]:
@@ -357,10 +442,14 @@ class Storage:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT id, host, port, auth_token, instance_name, workspace_name, "
-                "cwd, pid, parent_pid, started_at, heartbeat_at "
+                "cwd, pid, parent_pid, started_at, heartbeat_at, window_uid, agent "
                 "FROM instances ORDER BY heartbeat_at ASC"
             ).fetchall()
         return [dict(zip(self._INSTANCE_COLS, r)) for r in rows]
+
+    def get_instance_row(self, instance_id: str) -> dict | None:
+        """One registry row by id, or None."""
+        return next((r for r in self.get_instances() if str(r.get("id")) == str(instance_id)), None)
 
     def delete_instances(self, ids: list[str]) -> None:
         """Reap stale rows (dead/reused PID). No-op on empty input."""
@@ -384,8 +473,9 @@ class Storage:
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO instances"
-                "(id, host, port, auth_token, instance_name, workspace_name, cwd, pid, parent_pid, started_at, heartbeat_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, host, port, auth_token, instance_name, workspace_name, cwd, pid, parent_pid, started_at, "
+                "heartbeat_at, window_uid, agent) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     str(row["id"]), str(row.get("host") or "127.0.0.1"), int(row["port"]),
                     str(row.get("auth_token") or ""), str(row.get("instance_name") or ""),
@@ -393,6 +483,8 @@ class Storage:
                     int(row.get("pid") or 0),
                     (int(row["parent_pid"]) if row.get("parent_pid") not in (None, "") else None),
                     str(row.get("started_at") or ""), now,
+                    (str(row["window_uid"]) if row.get("window_uid") else None),
+                    (str(row["agent"]) if row.get("agent") else None),
                 ),
             )
 

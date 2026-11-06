@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from bot.storage import Storage
 from bot.touched import forget, note_touched, snapshot
 from bot.topics import resolve_workspace_id, window_prefix
-from bridge.registry import RuntimeInstance, _row_is_stale, canonical_cwd, is_local_host
+from bridge.registry import RuntimeInstance, _row_is_stale, canonical_cwd, is_local_host, route_identity, row_agent
 
 if TYPE_CHECKING:
     from bot.interwindow import InterWindowRouter
@@ -279,6 +279,7 @@ def make_registry_server(
                                 host=str(own_row.get("host") or ""),
                                 port=int(own_row.get("port") or 0), auth_token="",
                                 cwd=canonical_cwd(str(own_row.get("cwd") or "")),
+                                agent=row_agent(own_row),
                             )
                             topic = storage.get_topic(resolve_workspace_id(instance))
                         resp["topic_binding"] = (
@@ -331,7 +332,8 @@ def make_registry_server(
                         return
                     # Only the window the task is addressed to may move it. Without
                     # this any window could close another's work.
-                    if win and owner != win:
+                    # A request that names no window cannot prove it owns the task.
+                    if not win or owner != win:
                         logger.warning("registry: %s tried to move task #%s owned by %s",
                                        win, tid, owner)
                         self._send(403, {"ok": False, "reason": "not your task"})
@@ -380,7 +382,26 @@ def make_registry_server(
                     if not instance:
                         self._send(400, {"ok": False, "reason": "missing instance"})
                         return
-                    storage.record_message_route(chat_id, message_id, instance)
+                    # The identity comes from the sender's own registry row (looked
+                    # up by its scoped id, so a peer can only name rows it
+                    # registered), not from anything else in the request. Older
+                    # plugins send no row id: the route keeps the name only, and
+                    # replies to it are refused rather than resolved by name.
+                    identity = None
+                    raw_row = str(body.get("row_id") or "")
+                    if raw_row:
+                        row = storage.get_instance_row(self._scoped_id(raw_row))
+                        if row is None:
+                            self._send(404, {"ok": False, "reason": "unknown row_id"})
+                            return
+                        identity = route_identity(row)
+                    # A route, once recorded, is not reassigned to another window: a
+                    # peer could otherwise claim someone else's message so that
+                    # replies to it reach the peer. Re-recording by the same row (a
+                    # message edit) is fine.
+                    if not storage.record_message_route_once(chat_id, message_id, instance, identity):
+                        self._send(409, {"ok": False, "reason": "message already routed to another window"})
+                        return
                     self._send(200, {"ok": True})
                 elif path == "/route-window":
                     # Window-to-window messaging: a plugin asks the bot to deliver a

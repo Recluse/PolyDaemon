@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from telegram import Update
@@ -25,6 +26,8 @@ from bot.registry_watch import (
 )
 from bot.session import SessionStore
 from bot.storage import Storage
+from bot.activation import PERMIT_RECHECK_S, check_permit, permit_declared, permit_watch, router_guard
+from bot.update_journal import DurableUpdateQueue, JournalApplication, UpdateJournal
 from bridge.client import ChannelPluginClient
 from bridge.registry import build_instance_configs, load_runtime_instances
 
@@ -111,10 +114,14 @@ def build_bridge_client(config: dict[str, Any], storage: Storage) -> ChannelPlug
         instances,
         ping_timeout=float(bot_config.get("ping_timeout", 5.0)),
         post_timeout=float(bot_config.get("post_timeout", 10.0)),
+        transport_routes=bot_config.get("transport_routes"),
+        transport_direct_hosts=bot_config.get("transport_direct_hosts"),
     )
 
 
-def build_application(config: dict[str, Any]) -> Application:
+def build_application(config: dict[str, Any],
+                      permit_check: Callable[[], None] | None = None,
+                      permit_job: Callable[..., Any] | None = None) -> Application:
     telegram_config = config["telegram"]
     token = telegram_config["bot_token"]
 
@@ -147,6 +154,8 @@ def build_application(config: dict[str, Any]) -> Application:
     api_base = str(telegram_config.get("api_base_url", "https://api.telegram.org")).strip().rstrip("/")
 
     storage = Storage(DB_PATH)
+    journal = UpdateJournal(DB_PATH.with_name("updates.db"))
+    update_queue = DurableUpdateQueue(journal)
     sessions = SessionStore(storage, default_instance=str(bot_config.get("default_instance", "")))
     bridge_client = build_bridge_client(config, storage)
     from bot.topic_activity import TopicActivity, TopicMessageObserver
@@ -165,6 +174,12 @@ def build_application(config: dict[str, Any]) -> Application:
     registry_server = None  # set in _post_init, closed in _post_shutdown
 
     async def _post_init(app: Application) -> None:
+        # Re-check the permit immediately before replaying pending receipts and
+        # starting to poll: startup may have taken a while, and a demote may
+        # have withdrawn the permit in the meantime. Raising aborts run_polling.
+        if permit_check is not None:
+            permit_check()
+        await update_queue.restore(app.bot)
         await register_bot_commands(app)
 
         nonlocal registry_server
@@ -197,6 +212,10 @@ def build_application(config: dict[str, Any]) -> Application:
                     )
                 except Exception:
                     logger.exception("failed to start registry HTTP server on %s:%s", registry_host, registry_port)
+
+        if permit_job is not None:
+            app.job_queue.run_repeating(permit_job, interval=PERMIT_RECHECK_S,
+                                        first=PERMIT_RECHECK_S, name="permit-watch")
 
         # JobQueue: poll the bot.db `instances` table for newly registered /
         # departed windows (the registry is no longer file-watched), plus hourly
@@ -253,10 +272,13 @@ def build_application(config: dict[str, Any]) -> Application:
             logger.exception("bridge_client aclose failed")
         try:
             storage.close()
+            journal.close()
         except Exception:
             logger.exception("storage close failed")
 
-    builder = Application.builder().token(token).rate_limiter(TopicMessageObserver(topic_activity))
+    builder = (Application.builder().application_class(JournalApplication)
+               .update_queue(update_queue).token(token)
+               .rate_limiter(TopicMessageObserver(topic_activity)))
     if use_local:
         builder = (
             builder
@@ -286,15 +308,25 @@ def build_application(config: dict[str, Any]) -> Application:
     # file_id, because the bytes live on the server's volume, not the host.
     application.bot_data["use_local"] = use_local
     application.add_error_handler(error_handler)
+    update_queue.on_failure = application.stop_running
     return application
 
 
 def main() -> None:
     config_path = Path(__file__).with_name("config.yaml")
     config = load_config(config_path)
-    application = build_application(config)
-    logger.info("Starting Telegram bot polling.")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    node = os.environ.get("POLYDAEMON_NODE_ID")
+    permit = os.environ.get("POLYDAEMON_ACTIVATION_FILE")
+    role = os.environ.get("POLYDAEMON_NODE_ROLE")
+    with router_guard(DB_PATH.parent, node, permit, role):
+        if permit_declared(node, permit, role):
+            application = build_application(
+                config, permit_check=lambda: check_permit(node, permit, role),
+                permit_job=permit_watch(node, permit, role))
+        else:
+            application = build_application(config)
+        logger.info("Starting Telegram bot polling.")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
 
 
 if __name__ == "__main__":

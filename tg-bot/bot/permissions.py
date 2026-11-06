@@ -166,14 +166,14 @@ def list_workspaces_with_modes(context: ContextTypes.DEFAULT_TYPE) -> list[tuple
     they still apply when the workspace boots back up, but we don't want them
     cluttering the menu after the session is closed.
 
-    Keyed on ``inst.key`` (the DB ``workspace_name``) — was previously deriving
-    via ``strip_port_suffix(display_name)``, which is two transformations away
-    from the DB key and would silently drift the override-file schema the day
-    display_name uniquification changes. The workspace_name is canonical.
+    Keyed on the registered ``workspace_name``: that is what the plugin reads
+    (WORKSPACE_DISPLAY_NAME). Not on ``inst.key``, which is a window identity
+    token and which no plugin looks up — a mode saved under it would show in
+    the menu and change nothing. Same-named workspaces share one mode.
     """
     instances = refresh_instances(context)
     overrides = load_permission_overrides()
-    names = {inst.key for inst in instances}
+    names = {inst.workspace_name or inst.instance_name for inst in instances}
     return sorted([(name, overrides.get(name, MODE_DEFAULT)) for name in names], key=lambda x: x[0].lower())
 
 

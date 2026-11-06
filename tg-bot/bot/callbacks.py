@@ -19,6 +19,7 @@ from bot.callback_data import (
     CB_WSTATUS,
 )
 from bot.common import (
+    ask_place,
     build_window_options,
     find_instance,
     get_bridge_client,
@@ -26,9 +27,11 @@ from bot.common import (
     get_sessions,
     get_storage,
     get_user_id,
+    instances_named,
     persist_active_instances,
     refresh_instances,
     reply,
+    route_target,
 )
 from bot.i18n import t
 from bot.keyboards import (
@@ -117,12 +120,20 @@ async def reply_to_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if len(parts) != 2 or parts[0] != CB_REPLY_TO:
         await query.answer(t("common.bad_callback"), show_alert=True)
         return
-    instance_key = parts[1]
-
     runtime_instances = refresh_instances(context)
-    if find_instance(runtime_instances, instance_key) is None:
+    msg = query.message
+    if parts[1] == "@" and msg is not None:
+        # "Reply here" on a window's message: that message's recorded window.
+        window = route_target(get_storage(context).lookup_route(msg.chat_id, msg.message_id), runtime_instances)
+    else:
+        # Older plugins put their name here. A name selects a window only when
+        # exactly one live window answers to it.
+        named = instances_named(runtime_instances, parts[1])
+        window = named[0] if len(named) == 1 else None
+    if window is None:
         await query.answer(t("cb.window_gone"), show_alert=True)
         return
+    instance_key = window.key
 
     user_id = get_user_id(update)
     get_sessions(context).set_active_instance(user_id, instance_key)
@@ -166,20 +177,13 @@ async def approve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     delivered = False
     owner_key = _owning_instance_for_message(update, context, runtime_instances)
     if owner_key is not None:
-        if await bridge_client.post_approve_callback(owner_key, approval_id, action):
+        if await bridge_client.post_approve_callback(owner_key, approval_id, action, pinned=_pin(runtime_instances, owner_key)):
             delivered = True
 
-    # Fallback: probe every other live instance CONCURRENTLY so one unreachable
-    # window can't serialize behind the others (approval_ids are unique per
-    # process, so only the owner acts; the rest no-op). First success wins.
-    if not delivered:
-        candidates = [i for i in runtime_instances if i.key != owner_key]
-        results = await asyncio.gather(
-            *(bridge_client.post_approve_callback(inst.key, approval_id, action) for inst in candidates),
-            return_exceptions=True,
-        )
-        if any(ok is True for ok in results):
-            delivered = True
+    # No fallback to other windows: a decision belongs to the exact process that
+    # asked (see _owning_instance_for_message). If that process is gone, the
+    # request is gone with it; sending the id to every window would let any
+    # process that answers 200 act on it.
 
     if delivered:
         toast = {"once": t("cb.approve_once"), "always": t("cb.approve_always"), "deny": t("cb.approve_deny")}[action]
@@ -230,17 +234,10 @@ async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     delivered = False
     owner_key = _owning_instance_for_message(update, context, runtime_instances)
     if owner_key is not None:
-        if await bridge_client.post_plan_callback(owner_key, plan_id, action):
+        if await bridge_client.post_plan_callback(owner_key, plan_id, action, pinned=_pin(runtime_instances, owner_key)):
             delivered = True
 
-    if not delivered:
-        candidates = [i for i in runtime_instances if i.key != owner_key]
-        results = await asyncio.gather(
-            *(bridge_client.post_plan_callback(inst.key, plan_id, action) for inst in candidates),
-            return_exceptions=True,
-        )
-        if any(ok is True for ok in results):
-            delivered = True
+    # No fallback to other windows (see approve_callback).
 
     if delivered:
         toast = t("cb.plan_accepted") if action == "apply" else t("cb.plan_declined")
@@ -259,6 +256,13 @@ async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         pass
 
 
+def _pin(instances: list, key: str):
+    """The exact process (registry row) a decision goes to."""
+    from bridge.registry import instance_config
+    inst = find_instance(instances, key)
+    return instance_config(inst) if inst is not None else None
+
+
 def _owning_instance_for_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE, instances: list
 ) -> str | None:
@@ -274,15 +278,14 @@ def _owning_instance_for_message(
         return None
     storage = get_storage(context)
     routed = storage.lookup_route(msg.chat_id, msg.message_id)
-    if routed and find_instance(instances, routed) is not None:
-        return routed
-    if msg.message_thread_id is not None:
-        workspace_id = storage.get_workspace_by_thread(msg.chat_id, msg.message_thread_id)
-        if workspace_id:
-            from bot.topics import resolve_workspace_id
-            inst = next((i for i in instances if resolve_workspace_id(i) == workspace_id), None)
-            if inst is not None:
-                return inst.key
+    if routed:
+        # A decision belongs to the PROCESS that asked (its request id is only
+        # known there): the exact incarnation, never a reconnected successor.
+        row_id = routed.get("row_id")
+        owner = [i for i in instances if row_id and i.row_id == row_id]
+        return owner[0].key if len(owner) == 1 else None
+    # No route: nothing says which process issued this card. The topic's live
+    # window may be a later incarnation or another window of the workspace.
     return None
 
 
@@ -349,29 +352,12 @@ async def ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     owner_key = _owning_instance_for_message(update, context, runtime_instances)
     if owner_key is not None:
         if await bridge_client.post_ask_action(
-            owner_key, ask_id, action=action, option_idx=option_idx,
+            owner_key, ask_id, action=action, option_idx=option_idx, pinned=_pin(runtime_instances, owner_key),
         ):
             delivered_instance = owner_key
 
-    # Fallback (DM-origin ask, or an unbound thread): probe every live instance
-    # CONCURRENTLY so one unreachable window can't serialize behind the others.
-    # ask_ids are unique per plugin process, so only the owner acts; the rest
-    # no-op. First success wins.
-    if delivered_instance is None:
-        candidates = [i for i in runtime_instances if i.key != owner_key]
-        results = await asyncio.gather(
-            *(
-                bridge_client.post_ask_action(
-                    inst.key, ask_id, action=action, option_idx=option_idx,
-                )
-                for inst in candidates
-            ),
-            return_exceptions=True,
-        )
-        for inst, ok in zip(candidates, results, strict=False):
-            if ok is True:
-                delivered_instance = inst.key
-                break
+    # No fallback to other windows (see approve_callback): the ask belongs to the
+    # exact process that sent it.
 
     if delivered_instance is None:
         await query.answer(t("cb.ask_expired"))
@@ -382,7 +368,13 @@ async def ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # rather than as a normal chat message.
     if action == "custom":
         user_id = get_user_id(update)
-        get_sessions(context).set_pending_custom_ask(user_id, ask_id, delivered_instance)
+        # Bound to the exact process that owns the ask (row id), not to the
+        # window key, which a reconnected incarnation of the window inherits.
+        owner = find_instance(runtime_instances, delivered_instance)
+        get_sessions(context).set_pending_custom_ask(
+            user_id, ask_id, f"row:{owner.row_id}" if owner is not None else delivered_instance,
+            place=ask_place(query.message) if query.message is not None else None,
+            card_id=query.message.message_id if query.message is not None else None)
         await query.answer(t("cb.ask_awaiting_text"))
         return
 
