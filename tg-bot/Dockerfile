@@ -23,6 +23,10 @@ WORKDIR /app
 # Deps first for layer caching.
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+# GHSA-6q48-6c7w-9gw2: fail the build if the bundle still trusts the root of the
+# compromised eMudhra intermediates, or Comodo "AAA Certificate Services", which
+# cross-signs the same keys.
+RUN python -c "import certifi, ssl; assert certifi.__version__ == '2026.10.19'; roots = ssl.create_default_context(cafile=certifi.where()).get_ca_certs(); names = {value for root in roots for rdn in root['subject'] for key, value in rdn if key == 'commonName'}; assert not names & {'emSign ECC Root CA - G3', 'AAA Certificate Services'}, names & {'emSign ECC Root CA - G3', 'AAA Certificate Services'}"
 
 # Bot source (bot/, bridge/, utils/, tgbridge.py). config.yaml is NOT baked in —
 # mount the real one at runtime (it carries the token + enroll secret).

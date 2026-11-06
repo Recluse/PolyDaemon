@@ -2,4 +2,6 @@
 # The networked registry uses only the stdlib http.server — no new dependency.
 python-telegram-bot[job-queue]==22.*
 httpx==0.28.*
+# GHSA-6q48-6c7w-9gw2: excludes the compromised emSign ECC G3 trust root.
+certifi==2026.10.19
 pyyaml==6.*
