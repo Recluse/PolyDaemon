@@ -21,7 +21,14 @@ export function observeTopicMessages(sent: typeof sentObserver, topic: typeof to
 // grammy Bot — outbound only (no polling)
 // ---------------------------------------------------------------------------
 
-export const bot = new Bot(TOKEN!, { client: { apiRoot: API_ROOT } })
+export const bot = new Bot(TOKEN!, {
+  client: {
+    apiRoot: API_ROOT,
+    // Read API_ROOT live so a failover to another bot-api host takes effect
+    // without rebuilding the Bot instance.
+    buildUrl: (_root, token, method) => new URL(`${API_ROOT}/bot${token}/${method}`),
+  },
+})
 
 // Installed inside the formatting/routing transformers: observe the actual destination.
 bot.api.config.use(async (prev, method, payload, signal) => {
@@ -168,7 +175,10 @@ export async function sendMessageSafe(
 // ---------------------------------------------------------------------------
 
 export const MAX_CHUNK_LIMIT = 4096
-export const MAX_ATTACHMENT_BYTES = (API_IS_LOCAL ? 1990 : 50) * 1024 * 1024
+// Derived per read: API_IS_LOCAL can change when the endpoint chain fails over.
+export function maxAttachmentBytes(): number {
+  return (API_IS_LOCAL ? 1990 : 50) * 1024 * 1024
+}
 export const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
 
 export function assertSendable(f: string): void {

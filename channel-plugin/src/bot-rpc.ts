@@ -1,5 +1,6 @@
-import { BOT_URL, AUTH_TOKEN, WORKSPACE_DISPLAY_NAME, canonicalCwd } from './config.ts'
+import { BOT_URL, AUTH_TOKEN, WORKSPACE_DISPLAY_NAME, canonicalCwd, failover, endpointHealthy, useEndpoint } from './config.ts'
 import { log } from './logger.ts'
+import { redactSecrets } from './redact.ts'
 import { setRemoteTopicBinding } from './topics.ts'
 import { setRemoteModelButtons } from './models.ts'
 import { recentTouches, setOthersTouching } from './touched.ts'
@@ -25,8 +26,12 @@ async function rpc(
 ): Promise<{ ok: boolean; status: number; data: any }> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  // The endpoint this request goes to: a failure or success below is charged to
+  // it, not to whatever the chain prefers by the time the request settles.
+  const lease = useEndpoint()
+  const url = lease?.bot_url ?? BOT_URL
   try {
-    const res = await fetch(`${BOT_URL}${path}`, {
+    const res = await fetch(`${url}${path}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -37,8 +42,22 @@ async function rpc(
     })
     let data: any = null
     try { data = await res.json() } catch {}
-    return { ok: res.ok, status: res.status, data }
+    // The registry answers every request, success or refusal (403 for another
+    // window's task, 503 when inter-window routing is down), with a JSON object
+    // carrying a boolean "ok" (bot/http_registry.py _send payloads).
+    // That shows the endpoint is the bot; its status is the operation's result,
+    // not the endpoint's health. Anything else (an error page, a bare value) is
+    // not the registry: charge it to the endpoint and do not report success.
+    if (data !== null && typeof data === 'object' && !Array.isArray(data) && typeof data.ok === 'boolean') {
+      endpointHealthy(lease)
+      return { ok: res.ok, status: res.status, data }
+    }
+    failover(lease)
+    return { ok: false, status: res.status, data: { error: `not a registry answer (HTTP ${res.status})` } }
   } catch (e) {
+    // Transport-level failure: the endpoint is down. Move the chain forward so
+    // the next call (and this one's caller, on retry) reaches the reserve host.
+    failover(lease)
     return { ok: false, status: 0, data: { error: String(e) } }
   } finally {
     clearTimeout(timer)
@@ -114,8 +133,10 @@ export async function recordRouteRemote(
   chatId: number,
   messageId: number,
   instance: string,
+  rowId?: string,
 ): Promise<void> {
-  const r = await rpc('/route', { chat_id: chatId, message_id: messageId, instance })
+  const r = await rpc('/route', { chat_id: chatId, message_id: messageId, instance,
+    ...(rowId ? { row_id: rowId } : {}) })
   if (!r.ok) log(`PolyDaemon: remote route record failed (${r.status}): ${JSON.stringify(r.data)}`)
 }
 
@@ -126,7 +147,7 @@ export type WindowInfo = { name: string; workspace: string }
 // List the OTHER live windows the bot knows about (excludes this one).
 export async function listWindowsRemote(): Promise<{ ok: boolean; windows: WindowInfo[]; reason?: string }> {
   const r = await rpc('/windows', { from: WORKSPACE_DISPLAY_NAME })
-  if (!r.ok) return { ok: false, windows: [], reason: r.data?.reason || `HTTP ${r.status}` }
+  if (!r.ok) return { ok: false, windows: [], reason: redactSecrets(String(r.data?.reason || `HTTP ${r.status}`)) }
   return { ok: true, windows: Array.isArray(r.data?.windows) ? r.data.windows : [] }
 }
 
@@ -138,12 +159,24 @@ export async function routeWindowRemote(
   toName: string,
   text: string,
   kind: 'tell' | 'ask',
-): Promise<{ ok: boolean; delivered?: string; reason?: string; available?: string[] }> {
+): Promise<{ ok: boolean; delivered?: string; reason?: string; available?: string[]; uncertain?: boolean }> {
   const r = await rpc('/route-window', { from: WORKSPACE_DISPLAY_NAME, to: toName, text, kind }, 12000)
   if (!r.ok) {
+    // Known only when the bot itself refused (a registry JSON answer with a 4xx,
+    // or a 404 'target unreachable' it is sure about). No answer, an unreadable
+    // 2xx, any 5xx (e.g. a gateway's 502/504 page) or the bot's own 'uncertain'
+    // all leave delivery unknown.
+    const uncertain = r.status === 0 || (r.status >= 200 && r.status < 300) || r.status >= 500
+      || r.data?.uncertain === true
     return {
       ok: false,
-      reason: r.data?.reason || `HTTP ${r.status}`,
+      uncertain,
+      // No answer is not "not delivered": the bot may have delivered and then
+      // been slow posting its notes. Say so, so the caller does not resend blindly.
+      // A 2xx whose body could not be read is just as unknown as no answer.
+      reason: r.status === 0 || (r.status >= 200 && r.status < 300) || r.status >= 500
+        ? `no complete answer from the bot (HTTP ${r.status}): the message may already have been delivered — check before sending again`
+        : redactSecrets(String(r.data?.reason || `HTTP ${r.status}`)),
       available: Array.isArray(r.data?.available) ? r.data.available : undefined,
     }
   }
@@ -159,7 +192,7 @@ export type MyTask = { id: number; from: string; kind: string; text: string; sta
 
 export async function myTasksRemote(): Promise<{ ok: boolean; tasks: MyTask[]; reason?: string }> {
   const r = await rpc('/my-tasks', { window: WORKSPACE_DISPLAY_NAME })
-  if (!r.ok) return { ok: false, tasks: [], reason: r.data?.reason || `HTTP ${r.status}` }
+  if (!r.ok) return { ok: false, tasks: [], reason: redactSecrets(String(r.data?.reason || `HTTP ${r.status}`)) }
   if (r.data?.ok === false || !Array.isArray(r.data?.tasks) || !r.data.tasks.every((t: any) =>
     Number.isSafeInteger(t?.id) && t.id > 0 && ['from', 'kind', 'text', 'state'].every(k => typeof t[k] === 'string'))) {
     return { ok: false, tasks: [], reason: 'Invalid task response' }
@@ -171,6 +204,6 @@ export async function setTaskStateRemote(
   id: number, state: 'running' | 'done' | 'failed' | 'blocked', text: string,
 ): Promise<{ ok: boolean; reason?: string }> {
   const r = await rpc('/task-state', { id, state, text, window: WORKSPACE_DISPLAY_NAME })
-  if (!r.ok) return { ok: false, reason: r.data?.reason || `HTTP ${r.status}` }
+  if (!r.ok) return { ok: false, reason: redactSecrets(String(r.data?.reason || `HTTP ${r.status}`)) }
   return { ok: true }
 }
