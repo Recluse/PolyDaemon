@@ -12,6 +12,7 @@ import yaml
 
 
 class SnapshotTests(unittest.TestCase):
+    @unittest.skipUnless((Path(__file__).resolve().parents[1] / '.gitlab-ci.yml').is_file(), 'Private deployment CI is not distributed')
     def test_ci_activation_is_fail_closed_even_when_both_files_are_missing(self):
         repo = Path(__file__).resolve().parents[1]
         steps = yaml.safe_load((repo / '.gitlab-ci.yml').read_text())['deploy']['script']
@@ -31,6 +32,7 @@ class SnapshotTests(unittest.TestCase):
             (config / 'polydaemon-active-node').write_text('old\n')
             self.assertTrue(allowed())
 
+    @unittest.skipUnless((Path(__file__).resolve().parents[1] / '.gitlab-ci.yml').is_file(), 'Private deployment CI is not distributed')
     def test_ci_rechecks_the_permit_immediately_before_compose_up(self):
         repo = Path(__file__).resolve().parents[1]
         steps = yaml.safe_load((repo / '.gitlab-ci.yml').read_text())['deploy']['script']

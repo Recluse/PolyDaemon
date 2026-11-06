@@ -60,6 +60,7 @@ class HaDoc(unittest.TestCase):
         self.assertEqual(str(permit_path.parent), host_dir)
         self.assertEqual(permit_path.name, Path(env['POLYDAEMON_ACTIVATION_FILE']).name)
 
+    @unittest.skipUnless((DOC.parents[1] / '.gitlab-ci.yml').is_file(), 'Private deployment CI is not distributed')
     def test_ci_and_controller_activate_the_ha_service_profile(self) -> None:
         import yaml
         repo = DOC.parents[1]
