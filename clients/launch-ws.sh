@@ -4,8 +4,10 @@
 # folder name under TG_WORK_DIR (default ~/Work).
 #
 #   ./launch-ws.sh <workspace-name>   open that workspace in a new Terminal window
-#   ./launch-ws.sh <name> <dir> [claude|codex|opencode|mimo] [resume|new]
-#                                    open the exact directory; default Claude/resume
+#   ./launch-ws.sh <name> <dir> [claude|codex|opencode|mimo] [resume|new|thread:<id>]
+#                                    open the exact directory; default Claude/resume.
+#                                    thread:<id> (Codex only) resumes exactly that
+#                                    thread — what /restart passes, never "newest".
 #   ./launch-ws.sh -l                 list launchable workspaces (those with polydaemon-claude.sh)
 #
 # Opens a TAB in iTerm2 when iTerm2 is there, otherwise a Terminal.app window.
@@ -77,7 +79,16 @@ NAME="$1"
 AGENT="${3:-claude}"
 MODE="${4:-resume}"
 case "$AGENT" in claude|codex|opencode|mimo) ;; *) echo 'unknown agent' >&2; exit 2 ;; esac
-case "$MODE" in resume|new) ;; *) echo 'unknown session mode' >&2; exit 2 ;; esac
+THREAD=""
+case "$MODE" in
+  resume|new) ;;
+  thread:*)
+    THREAD="${MODE#thread:}"
+    # The id is interpolated into a shell/AppleScript command line below.
+    [[ "$AGENT" = codex && "$THREAD" =~ ^[A-Za-z0-9_-]{1,160}$ ]] || { echo 'invalid thread selection' >&2; exit 2; }
+    MODE=resume ;;
+  *) echo 'unknown session mode' >&2; exit 2 ;;
+esac
 SCRIPT="polydaemon-$AGENT.sh"
 has_launcher() {
   [ -f "$1/$SCRIPT" ] || { [ "$AGENT" = claude ] && [ "$MODE" = resume ] && [ -f "$1/tg-claude.sh" ]; }
@@ -94,6 +105,7 @@ done < <(find "$WORK_DIR" -maxdepth 5 -type d -name "$NAME" -not -path '*/node_m
 [ -f "$DIR/$SCRIPT" ] || SCRIPT=tg-claude.sh
 FRESH=""
 [ "$MODE" != new ] || FRESH=" new"
+[ -z "$THREAD" ] || FRESH=" resume $THREAD"
 NUDGE="${TG_MAC_NUDGE:-1}"
 [ "$AGENT" = claude ] || NUDGE=0
 

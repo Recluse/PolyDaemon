@@ -37,7 +37,10 @@ switch ($Agent) {
         }
         $launch += $AgentArgs
         $env:CLAUDE_CODE_ENTRYPOINT = ''
-        if (!$env:TG_WINDOW_UID) { $env:TG_WINDOW_UID = [guid]::NewGuid().ToString() }
+        # A new id per launch: an inherited one would give two windows one id
+        # (see polydaemon-claude.sh). Only an explicit relaunch keeps it.
+        if ($env:TG_WINDOW_UID_KEEP -ne '1' -or !$env:TG_WINDOW_UID) { $env:TG_WINDOW_UID = [guid]::NewGuid().ToString() }
+        Remove-Item Env:TG_WINDOW_UID_KEEP -ErrorAction SilentlyContinue
         $command = 'claude.cmd'
     }
     'codex' {

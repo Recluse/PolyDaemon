@@ -16,28 +16,32 @@ test('resume uses saved sessions; delivery still reaches unpersisted windows', a
     child: { id: 'child', cwd: '/work/sample-project', updatedAt: 20, source: { subAgent: {} } },
     project: { id: 'project', cwd: '/work/sample-project', updatedAt: 10, source: 'vscode', status: { type: 'idle' } },
   }
+  const sockets: any[] = []
   class Socket {
     static OPEN = 1
     readyState = 1
     onopen: any
     onmessage: any
-    constructor() { queueMicrotask(() => this.onopen?.()) }
+    onclose: any
+    constructor() { sockets.push(this); queueMicrotask(() => this.onopen?.()) }
     send(raw: string) {
       const m = JSON.parse(raw)
       calls.push(m)
       let result: any = {}
-      if (m.method === 'thread/loaded/list') result = { data: loaded }
+      if (m.method === 'thread/loaded/list') result = { data: loaded, nextCursor: null }
       if (m.method === 'thread/read') result = { thread: threads[m.params.threadId] }
       if (m.method === 'thread/list') result = { data: saved, nextCursor: null }
       queueMicrotask(() => this.onmessage?.({ data: JSON.stringify({ id: m.id, result }) }))
     }
   }
   globalThis.WebSocket = Socket as unknown as typeof WebSocket
+  process.env.TG_CODEX_RESERVE_MS = '0'   // resume reservations: codex-binding.test.ts
   try {
     const { lastThreadFor, deliverToCodex, notifyCodexError } = await import('./codex.ts')
     expect(await lastThreadFor('/work/sample-project')).toBe('saved')
-    expect(calls.some(c => c.method === 'thread/loaded/list')).toBe(false)
-    expect((await deliverToCodex('/work/sample-project', 'ping')).thread_id).toBe('project')
+    // Resume also looks at loaded threads: a thread a live window owns is not resumed.
+    // A fresh window's loaded thread plus another saved thread are two candidates.
+    expect((await deliverToCodex('/work/sample-project', 'ping')).reason).toContain('ambiguous: 2')
     loaded = ['child']
     expect((await deliverToCodex('/work/sample-project', 'ping')).thread_id).toBe('saved')
     expect(calls.find(c => c.method === 'thread/list')!.params.cwd).toBe('/work/sample-project')
@@ -81,6 +85,9 @@ test('resume uses saved sessions; delivery still reaches unpersisted windows', a
       expect(posts).toHaveLength(1)
     } finally { rows.mockRestore(); globalThis.fetch = originalFetch }
   } finally {
+    // codex.ts keeps one module-level connection: close it for the next file.
+    for (const s of sockets) { if (s.readyState !== 3) { s.readyState = 3; s.onclose?.() } }
+    delete process.env.TG_CODEX_RESERVE_MS
     processes.mockRestore()
     globalThis.WebSocket = originalWebSocket
   }

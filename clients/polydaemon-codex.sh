@@ -2,8 +2,8 @@
 # polydaemon-codex.sh — a Codex window attached to the daemon's shared app-server.
 # Telegram messages reach it by push (the daemon starts a turn in the thread),
 # the TUI and the bridge see the same thread, and the window registers as
-# "<folder>-codex" with its OWN forum topic. It continues this folder's last
-# thread when the daemon knows one. See docs/codex.md.
+# "<folder>-codex" with its OWN forum topic. It continues this folder's only
+# saved thread; with several it refuses instead of guessing. See docs/codex.md.
 set -euo pipefail
 if [ "${1:-}" = new ]; then
   shift
@@ -38,13 +38,15 @@ if ! curl -sm2 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
   echo "polydaemon-codex: the daemon's Codex app-server is not answering on :${PORT} — start agent/agentd.ts (docs/codex.md)" >&2
   exit 1
 fi
-# Resume this folder's most recent thread, if the daemon knows it.
+# Resume this folder's thread only when that is unambiguous: the daemon answers
+# with the single saved root thread, none (start fresh) or a refusal when the
+# folder has several — then pick one explicitly (resume <id>) or start `new`.
 RESUME_ID=""
 AGENT_TOML="$HOME/.tg-bridge/agent.toml"
 if [ -f "$AGENT_TOML" ] && [ "${TG_CODEX_NEW:-0}" != 1 ] && [ "$EXPLICIT" = 0 ]; then
   TOKEN="$(grep '^auth_token' "$AGENT_TOML" | cut -d'"' -f2)"
   APORT="$(grep '^port' "$AGENT_TOML" | tr -dc '0-9' || true)"
-  RESPONSE="$(curl -fsm4 -H "Authorization: Bearer ${TOKEN}" \
+  RESPONSE="$(curl -sm4 -H "Authorization: Bearer ${TOKEN}" \
     --get --data-urlencode "cwd=$(pwd -P)" \
     "http://127.0.0.1:${APORT:-3200}/v1/codex/last-thread" \
     2>/dev/null)" || { echo 'polydaemon-codex: last-thread lookup failed; refusing to silently start fresh' >&2; exit 1; }
@@ -52,11 +54,15 @@ if [ -f "$AGENT_TOML" ] && [ "${TG_CODEX_NEW:-0}" != 1 ] && [ "$EXPLICIT" = 0 ];
     let data=""; process.stdin.on("data", c => data += c);
     process.stdin.on("end", () => { try {
       const value=JSON.parse(data);
+      if(value && value.ok === false && typeof value.reason === "string") {
+        console.error("polydaemon-codex: " + value.reason.slice(0, 300) + "\npolydaemon-codex: choose explicitly: resume <thread-id>, or new");
+        process.exitCode=1; return;
+      }
       if(!value || !Object.hasOwn(value, "thread_id") || value.ok === false || !(value.thread_id == null || typeof value.thread_id === "string")) throw Error();
       if(value.thread_id && !/^[A-Za-z0-9-]+$/.test(value.thread_id)) throw Error();
       process.stdout.write(value.thread_id || "");
     } catch { console.error("polydaemon-codex: invalid last-thread response"); process.exitCode=1; } });
-  ')"
+  ')" || exit 1
 fi
 # Opt in for centrally managed installations only; never alter global settings.
 UPDATE=""

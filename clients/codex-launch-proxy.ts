@@ -1,4 +1,5 @@
-import { realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, lstatSync, mkdirSync, openSync, realpathSync, renameSync, writeSync } from 'node:fs'
+import { dirname } from 'node:path'
 
 export type ContextUsage = { tokens: number; window: number | null }
 export function contextUsage(value: any): ContextUsage | null {
@@ -14,6 +15,10 @@ export class LaunchBinding {
   sequence = 0
   thread: string | null = null
   context: ContextUsage | null = null
+  // The last thread the server confirmed. While switches are in flight the
+  // panel shows none; a failed switch returns to this, even when an earlier
+  // switch was still pending when the later one was sent.
+  confirmed: { thread: string | null; context: ContextUsage | null } = { thread: null, context: null }
   constructor(readonly cwd: string, readonly publish: (thread: string | null, context?: ContextUsage | null) => void) {}
   client(raw: string) {
     try {
@@ -35,6 +40,7 @@ export class LaunchBinding {
       if (m.method === 'thread/tokenUsage/updated') {
         if (this.thread && m.params?.threadId === this.thread) {
           this.context = contextUsage(m.params.tokenUsage)
+          if (this.confirmed.thread === this.thread) this.confirmed.context = this.context
           this.publish(this.thread, this.context)
         }
         return
@@ -42,7 +48,26 @@ export class LaunchBinding {
       if (m.method || !this.pending.has(m.id)) return
       const pending = this.pending.get(m.id)!
       this.pending.delete(m.id)
-      if (pending.sequence !== this.sequence) return
+      if (pending.sequence !== this.sequence) {
+        // An older switch answered after a newer one was sent. It does not
+        // decide what the panel shows now, but if it succeeded the CLI WAS on
+        // that thread, so a later failure must fall back to it, not further.
+        const t = m.result?.thread
+        let same = false
+        try { same = !!t && realpathSync(t.cwd) === realpathSync(this.cwd) } catch { /* not ours */ }
+        if (!m.error && t && typeof t.id === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(t.id)
+            && t.ephemeral !== true && t.parentThreadId == null) {
+          this.confirmed = same ? { thread: t.id, context: null } : { thread: null, context: null }
+        }
+        return
+      }
+      if (m.error || !m.result) {
+        // The CLI's switch failed, so it is still on the last confirmed thread.
+        this.thread = this.confirmed.thread
+        this.context = this.confirmed.context
+        this.publish(this.thread, this.context)
+        return
+      }
       const t = m.result?.thread
       if (t?.ephemeral === true || t?.parentThreadId != null) {
         this.thread = pending.previous.thread
@@ -50,9 +75,16 @@ export class LaunchBinding {
         this.publish(this.thread, this.context)
         return
       }
-      if (typeof t?.id !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(t.id)
-          || realpathSync(t.cwd) !== realpathSync(this.cwd)) return
+      let sameWorkspace = false
+      try { sameWorkspace = realpathSync(t?.cwd) === realpathSync(this.cwd) } catch { /* unreadable cwd: not ours */ }
+      if (typeof t?.id !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(t.id) || !sameWorkspace) {
+        // The CLI is now on a thread of another workspace (or one we cannot
+        // read): nothing of this workspace is confirmed any more.
+        this.confirmed = { thread: null, context: null }
+        return
+      }
       this.thread = t.id
+      this.confirmed = { thread: t.id, context: null }
       this.publish(t.id)
     } catch { /* bad or failed replies leave the panel unbound */ }
   }
@@ -112,13 +144,47 @@ export function launchProxy(url: string, cwd: string, publish: (id: string | nul
   return { port: server.port, stop() { close(); server.stop(true) } }
 }
 
+/** Writes the panel's binding file. The file sits in a per-launch folder under
+ *  the workspace's tmp/, which cleanup can delete while the CLI keeps running;
+ *  the folder is recreated instead of failing every later write in silence
+ *  (the panel then showed "unavailable" for good while Telegram worked). */
+export function bindingFilePublisher(file: string, cwd: string) {
+  const folder = dirname(file)
+  const scratch = dirname(folder)            // the workspace's tmp/
+  // O_NOFOLLOW where the platform has it: a planted .next symlink must not
+  // redirect (and truncate) another file.
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0)
+  const write = (body: string) => {
+    const fd = openSync(file + '.next', flags, 0o600)
+    try { writeSync(fd, body) } finally { closeSync(fd) }
+    renameSync(file + '.next', file)
+  }
+  // The launcher refuses a symlinked tmp/. Check before every write, not only
+  // when recreating: a link swapped in later would otherwise be followed.
+  const refuseLinks = () => {
+    for (const dir of [scratch, folder]) {
+      try { if (lstatSync(dir).isSymbolicLink()) throw new Error(`binding folder ${dir} is a symlink`) }
+      catch (e: any) { if (e?.code !== 'ENOENT') throw e }
+    }
+  }
+  return (thread: string | null, context: ContextUsage | null = null) => {
+    const body = JSON.stringify({ thread, cwd, context })
+    refuseLinks()
+    try {
+      write(body)
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') throw error
+      mkdirSync(folder, { recursive: true, mode: 0o700 })
+      refuseLinks()
+      write(body)
+    }
+  }
+}
+
 if (import.meta.main) {
   const [url, cwd, file] = process.argv.slice(2)
   if (!url || !cwd || !file) throw Error('Expected URL cwd binding-file')
-  const publish = (thread: string | null, context: ContextUsage | null = null) => {
-    writeFileSync(file + '.next', JSON.stringify({ thread, cwd, context }), { mode: 0o600 })
-    renameSync(file + '.next', file)
-  }
+  const publish = bindingFilePublisher(file, cwd)
   publish(null)
   const proxy = launchProxy(url, cwd, publish)
   console.log(JSON.stringify({ port: proxy.port }))

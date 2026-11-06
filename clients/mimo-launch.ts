@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -27,6 +27,14 @@ if (Object.values(readRegistry()).some(row => /-mimo$/i.test(row.instance_name |
   throw new Error('A MiMo bridge window already owns this workspace')
 }
 const temp = mkdtempSync(join(tmpdir(), 'polydaemon-mimo-'))
+// The binding lives in the persistent state dir, NOT in $TMPDIR: macOS purges
+// temporary files on a daily schedule while the window keeps running, and a
+// vanished binding.json bricks every tool call ("guard unavailable"). It is
+// rewritten by the pump below if it ever goes missing.
+const windowUid = randomUUID()
+const bindingDir = join(homedir(), '.tg-bridge-channel', 'mimo-bindings')
+mkdirSync(bindingDir, { recursive: true, mode: 0o700 })
+const bindingPath = join(bindingDir, `${windowUid}.json`)
 const controller = new AbortController()
 let server: ReturnType<typeof Bun.spawn> | undefined
 let tui: ReturnType<typeof Bun.spawn> | undefined
@@ -37,7 +45,7 @@ try {
   const env: Record<string, string | undefined> = { ...process.env,
     MIMOCODE_SERVER_PASSWORD: randomUUID(), MIMOCODE_SERVER_USERNAME: 'polydaemon',
     TG_BRIDGE_AGENT: 'mimo', TG_BRIDGE_INSTANCE_NAME: `${process.env.TG_WS_NAME || basename(cwd)}-mimo`,
-    TG_WINDOW_UID: randomUUID(), TG_MIMO_ROOT: cwd, TG_MIMO_BINDING: join(temp, 'binding.json'),
+    TG_WINDOW_UID: windowUid, TG_MIMO_ROOT: cwd, TG_MIMO_BINDING: bindingPath,
     MIMOCODE_TUI_CONFIG: join(temp, 'tui.json') }
   for (const key of ['CODEX_THREAD_ID', 'CLAUDE_PROJECT_DIR', 'CLAUDE_CODE_ENTRYPOINT']) delete env[key]
   process.env.TG_WINDOW_UID = env.TG_WINDOW_UID
@@ -89,6 +97,7 @@ try {
   session ??= await api('/session', { title: env.TG_BRIDGE_INSTANCE_NAME })
   if (session.parentID || realpathSync(session.directory) !== cwd) throw new Error('Refusing a foreign or child session')
   writeFileSync(env.TG_MIMO_BINDING!, JSON.stringify({ root: cwd, sessionID: session.id }), { mode: 0o600 })
+  const bind = () => writeFileSync(bindingPath, JSON.stringify({ root: cwd, sessionID: session.id }), { mode: 0o600 })
   await api('/mcp')
   const ready = JSON.parse(readFileSync(`${env.TG_MIMO_BINDING}.ready`, 'utf8'))
   if (ready.root !== cwd || ready.version !== 1) throw new Error('MiMo guard plugin did not initialize')
@@ -104,6 +113,8 @@ try {
   pump = (async () => {
     let warned = false
     while (!controller.signal.aborted) {
+      // Self-heal: a missing binding would brick every tool call in the window.
+      try { if (!existsSync(bindingPath)) bind() } catch {}
       try {
         const { item } = await bridgeRequest(cwd, '/inbound')
         if (item) {
@@ -151,4 +162,5 @@ try {
   await pump
   await relay
   rmSync(temp, { recursive: true, force: true })
+  rmSync(bindingPath, { force: true })
 }

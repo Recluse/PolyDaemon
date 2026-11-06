@@ -28,12 +28,15 @@ function Read-AgentConfig {
     return @{ Base='http://127.0.0.1:' + $port; Token=$token }
 }
 function Get-InteractiveArguments {
+    # -Plan/-Check only print the launch line: they must not reserve the thread
+    # for an automatic resume, or the real launch that follows is refused.
+    param([bool]$Reserve = $true)
     $prefix = @('--remote',$ws)
     if ($env:TG_CODEX_CHECK_UPDATE -ceq '0') { $prefix += @('-c','check_for_update_on_startup=false') }
     if (!$selection.New -and !$selection.ExplicitSelection) {
         $cfg = Read-AgentConfig
         try {
-            $result = Invoke-RestMethod -Uri ($cfg.Base + '/v1/codex/last-thread?cwd=' + [Uri]::EscapeDataString($Workspace)) -Headers @{Authorization=('Bearer ' + $cfg.Token)} -TimeoutSec 4
+            $result = Invoke-RestMethod -Uri ($cfg.Base + '/v1/codex/last-thread?cwd=' + [Uri]::EscapeDataString($Workspace) + $(if ($Reserve) { '' } else { '&reserve=0' })) -Headers @{Authorization=('Bearer ' + $cfg.Token)} -TimeoutSec 4
         } catch { throw "Codex last-thread lookup failed for '$Workspace'; refusing to silently start fresh. Check the daemon/authentication." }
         if ($null -eq $result) { throw 'Invalid Codex last-thread response; refusing to silently start fresh' }
         $hasId = if ($result -is [Collections.IDictionary]) { $result.Contains('thread_id') } else { $null -ne $result.PSObject.Properties['thread_id'] }
@@ -47,7 +50,7 @@ function Get-InteractiveArguments {
     return $prefix + @('--cd',$Workspace) + $CodexArgs
 }
 if ($Plan) {
-    [PSCustomObject]@{ fresh=$selection.New; arguments=@(Get-InteractiveArguments) } | ConvertTo-Json -Depth 4
+    [PSCustomObject]@{ fresh=$selection.New; arguments=@(Get-InteractiveArguments -Reserve $false) } | ConvertTo-Json -Depth 4
     exit 0
 }
 $codexCommand = (Get-Command codex.cmd -ErrorAction Stop).Source
@@ -83,7 +86,7 @@ for ($i=0; $i -lt 30; $i++) {
 }
 if (!$ready) { throw 'Bridge app-server not ready; inspect ~/.tg-bridge/agentd.log' }
 Set-Location -LiteralPath $Workspace
-$interactiveArgs = @(Get-InteractiveArguments)
+$interactiveArgs = @(Get-InteractiveArguments -Reserve (!$Check))
 if ($Check) {
     Write-Output ('CLI: ' + $codexCommand)
     Write-Output ('Launch: ' + ($interactiveArgs -join ' '))

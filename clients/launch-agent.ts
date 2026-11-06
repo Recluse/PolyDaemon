@@ -85,13 +85,13 @@ function safeDir(v: unknown): string {
   return absolute && d.length <= 1024 && !d.includes('\0') ? d : ''
 }
 
-function launch(name: string, dir: string, agent: string, fresh: boolean): Promise<void> {
+function launch(name: string, dir: string, agent: string, fresh: boolean, thread = ''): Promise<void> {
   // Wait for the launcher, not the agent window it opens. A successful spawn
   // alone does not prove PowerShell accepted its arguments or opened a console.
   const [cmd, args] = IS_WINDOWS
     ? ['powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT, name,
         ...(dir ? ['-Dir', dir] : []), '-Agent', agent, ...(fresh ? ['-NewSession'] : [])]]
-    : ['bash', [SCRIPT, name, dir, agent, fresh ? 'new' : 'resume']] as [string, string[]]
+    : ['bash', [SCRIPT, name, dir, agent, thread ? `thread:${thread}` : fresh ? 'new' : 'resume']] as [string, string[]]
   // The script's own output goes to this agent's log: it is the only place that
   // says WHY a launch fell back to Terminal.app or found no workspace.
   return new Promise((resolve, reject) => {
@@ -211,7 +211,8 @@ try {
     async fetch(req) {
       const url = new URL(req.url)
       if (req.method === 'GET' && url.pathname === '/health') {
-        return Response.json({ ok: true, agents: AGENTS, new_session: true })
+        // thread_resume: /restart can pin the exact Codex thread (POSIX launcher).
+        return Response.json({ ok: true, agents: AGENTS, new_session: true, thread_resume: !IS_WINDOWS })
       }
       if (!authed(req)) return new Response('Unauthorized', { status: 401 })
       if (req.method === 'GET' && url.pathname === '/version') {
@@ -235,7 +236,7 @@ try {
         } finally { updating = false }
       }
       if (req.method === 'POST' && url.pathname === '/launch') {
-        let body: { name?: string; cwd?: string; agent?: string; new_session?: boolean }
+        let body: { name?: string; cwd?: string; agent?: string; new_session?: boolean; thread_id?: unknown }
         try { body = (await req.json()) as typeof body }
         catch { return new Response('Bad JSON', { status: 400 }) }
         if (!body || typeof body !== 'object') return new Response('Bad JSON', { status: 400 })
@@ -244,6 +245,11 @@ try {
         const fresh = body.new_session ?? false
         if (!AGENTS.includes(agent) || typeof fresh !== 'boolean') {
           return Response.json({ ok: false, reason: 'invalid agent or session mode' }, { status: 400 })
+        }
+        const thread = body.thread_id == null ? '' : body.thread_id
+        if (typeof thread !== 'string' || (thread && (agent !== 'codex' || fresh || IS_WINDOWS
+            || !/^[A-Za-z0-9_-]{1,160}$/.test(thread)))) {
+          return Response.json({ ok: false, reason: 'invalid thread selection (Codex resume on macOS/Linux only)' }, { status: 400 })
         }
         if (!SAFE_NAME.test(name)) {
           return Response.json({ ok: false, reason: 'unsafe or empty name' }, { status: 400 })
@@ -258,12 +264,12 @@ try {
             && !(agent === 'claude' && !fresh && existsSync(resolve(dir, `tg-claude.${extension}`))))) {
           return Response.json({ ok: false, reason: 'selected launcher not installed in workspace' }, { status: 404 })
         }
-        try { await launch(name, dir, agent, fresh) }
+        try { await launch(name, dir, agent, fresh, thread) }
         catch (error) {
           console.error(`launch-agent: launch failed for ${name}: ${error}`)
           return Response.json({ ok: false, reason: String(error) }, { status: 502 })
         }
-        console.log(`launch-agent: launch ${name} agent=${agent} new=${fresh}${dir ? ` in ${dir}` : ''}`)
+        console.log(`launch-agent: launch ${name} agent=${agent} new=${fresh}${thread ? ` thread=${thread}` : ''}${dir ? ` in ${dir}` : ''}`)
         return Response.json({ ok: true })
       }
       return new Response('Not Found', { status: 404 })

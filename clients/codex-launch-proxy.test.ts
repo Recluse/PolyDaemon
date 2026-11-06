@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test'
-import { LaunchBinding, launchProxy, contextUsage } from './codex-launch-proxy.ts'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { LaunchBinding, bindingFilePublisher, launchProxy, contextUsage } from './codex-launch-proxy.ts'
 
 test('ephemeral CLI work cannot steal the panel, its usage or a pending durable navigation', () => {
   const output: any[] = [], cwd = process.cwd()
@@ -97,4 +100,117 @@ test('proxy preserves requests and approval payloads byte-for-byte; it makes no 
     for (let i = 0; seen.length < 2 && i < 50; i++) await Bun.sleep(10)
     expect(seen).toEqual([start, human])
   } finally { cli.close(); proxy.stop(); upstream.stop(true) }
+})
+
+test('a failed thread switch leaves the panel on the thread the CLI is still on', () => {
+  const output: any[] = [], cwd = process.cwd()
+  const b = new LaunchBinding(cwd, (id, context) => output.push({ id, context }))
+  b.client(JSON.stringify({ id: 1, method: 'thread/resume' }))
+  b.server(JSON.stringify({ id: 1, result: { thread: { id: 'main', cwd } } }))
+  b.client(JSON.stringify({ id: 2, method: 'thread/resume' }))
+  expect(b.thread).toBeNull()                       // navigation in flight
+  b.server(JSON.stringify({ id: 2, error: { code: -32600, message: 'no such thread' } }))
+  expect(b.thread).toBe('main')
+  expect(output.at(-1)).toEqual({ id: 'main', context: null })
+})
+
+test('the binding file is rewritten after its folder was deleted', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pd-binding-'))
+  try {
+    const folder = join(root, 'tmp', '.polydaemon-codex-x')
+    const file = join(folder, 'binding.json')
+    const publish = bindingFilePublisher(file, '/work/project')
+    publish('first')
+    rmSync(join(root, 'tmp'), { recursive: true, force: true })   // workspace cleanup
+    publish('second')
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ thread: 'second', cwd: '/work/project', context: null })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('overlapping failed switches return to the confirmed thread', () => {
+  const output: any[] = [], cwd = process.cwd()
+  const b = new LaunchBinding(cwd, (id, context) => output.push({ id, context }))
+  b.client(JSON.stringify({ id: 1, method: 'thread/resume' }))
+  b.server(JSON.stringify({ id: 1, result: { thread: { id: 'main', cwd } } }))
+  b.client(JSON.stringify({ id: 2, method: 'thread/resume' }))
+  b.client(JSON.stringify({ id: 3, method: 'thread/resume' }))
+  b.server(JSON.stringify({ id: 2, error: { message: 'no such thread' } }))
+  b.server(JSON.stringify({ id: 3, error: { message: 'no such thread' } }))
+  expect(b.thread).toBe('main')
+})
+
+test('a symlinked tmp/ is not followed when the binding folder is recreated', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pd-binding-'))
+  try {
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(elsewhere)
+    const file = join(root, 'ws', 'tmp', '.polydaemon-codex-x', 'binding.json')
+    const publish = bindingFilePublisher(file, '/work/project')
+    publish('first')
+    rmSync(join(root, 'ws', 'tmp'), { recursive: true, force: true })
+    symlinkSync(elsewhere, join(root, 'ws', 'tmp'))
+    expect(() => publish('second')).toThrow(/symlink/)
+    expect(existsSync(join(elsewhere, '.polydaemon-codex-x'))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a planted .next symlink does not redirect the write', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pd-binding-'))
+  try {
+    const folder = join(root, 'tmp', '.polydaemon-codex-x')
+    mkdirSync(folder, { recursive: true })
+    const victim = join(root, 'victim.txt')
+    writeFileSync(victim, 'keep me')
+    symlinkSync(victim, join(folder, 'binding.json.next'))
+    const publish = bindingFilePublisher(join(folder, 'binding.json'), '/work/project')
+    expect(() => publish('x')).toThrow()
+    expect(readFileSync(victim, 'utf8')).toBe('keep me')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a symlinked tmp/ is refused even when the target folder already exists', () => {
+  const root = mkdtempSync(join(tmpdir(), 'pd-binding-'))
+  try {
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(join(elsewhere, '.polydaemon-codex-x'), { recursive: true })
+    const file = join(root, 'ws', 'tmp', '.polydaemon-codex-x', 'binding.json')
+    const publish = bindingFilePublisher(file, '/work/project')
+    publish('first')
+    rmSync(join(root, 'ws', 'tmp'), { recursive: true, force: true })
+    symlinkSync(elsewhere, join(root, 'ws', 'tmp'))
+    expect(() => publish('second')).toThrow(/symlink/)
+    expect(existsSync(join(elsewhere, '.polydaemon-codex-x', 'binding.json'))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a switch to a thread whose folder cannot be read clears the confirmation', () => {
+  const cwd = process.cwd()
+  const b = new LaunchBinding(cwd, () => {})
+  b.client(JSON.stringify({ id: 1, method: 'thread/resume' }))
+  b.server(JSON.stringify({ id: 1, result: { thread: { id: 'main', cwd } } }))
+  b.client(JSON.stringify({ id: 2, method: 'thread/resume' }))
+  b.server(JSON.stringify({ id: 2, result: { thread: { id: 'gone', cwd: '/no/such/folder/anywhere' } } }))
+  b.client(JSON.stringify({ id: 3, method: 'thread/resume' }))
+  b.server(JSON.stringify({ id: 3, error: { message: 'failed' } }))
+  expect(b.thread).toBeNull()
+})
+
+test('a failure after an older successful switch falls back to that switch', () => {
+  const cwd = process.cwd()
+  const b = new LaunchBinding(cwd, () => {})
+  b.client(JSON.stringify({ id: 1, method: 'thread/resume' }))
+  b.server(JSON.stringify({ id: 1, result: { thread: { id: 'main', cwd } } }))
+  b.client(JSON.stringify({ id: 2, method: 'thread/resume' }))
+  b.client(JSON.stringify({ id: 3, method: 'thread/resume' }))
+  b.server(JSON.stringify({ id: 2, result: { thread: { id: 'second', cwd } } }))
+  b.server(JSON.stringify({ id: 3, error: { message: 'failed' } }))
+  expect(b.thread).toBe('second')
 })

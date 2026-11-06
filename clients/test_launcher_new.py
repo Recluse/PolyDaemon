@@ -92,6 +92,15 @@ class NewSessionTest(unittest.TestCase):
                     env={**env, 'AGENT': 'codex', 'THREAD_RESPONSE': response}, text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('invalid last-thread response', result.stderr)
+            # Several threads in the folder: the daemon refuses, and the launcher
+            # neither starts fresh nor resumes the newest — it says why.
+            refusal = '{"ok":false,"code":"ambiguous","reason":"ambiguous: 2 codex threads in this folder"}'
+            result = subprocess.run(['bash', str(workspace / 'polydaemon-codex.sh')],
+                env={**env, 'AGENT': 'codex', 'THREAD_RESPONSE': refusal}, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('ambiguous: 2 codex threads', result.stderr)
+            self.assertIn('resume <thread-id>', result.stderr)
+            self.assertEqual(result.stdout.strip(), '')
             for response in ('{"thread_id":null}', '{"thread_id":""}'):
                 result = subprocess.run(['bash', str(workspace / 'polydaemon-codex.sh')],
                     env={**env, 'AGENT': 'codex', 'THREAD_RESPONSE': response}, text=True, capture_output=True, check=True)

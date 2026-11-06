@@ -8,7 +8,15 @@ import type { InboundItem } from '../channel-plugin/src/inbound-queue.ts'
 export function binding(cwd: string) {
   const file = process.env.TG_MIMO_BINDING
   if (!file) throw new Error('MiMo bridge session is not bound')
-  const value = JSON.parse(readFileSync(file, 'utf8'))
+  let value: any
+  try {
+    value = JSON.parse(readFileSync(file, 'utf8'))
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      throw new Error(`MiMo bridge binding file is missing (${file}); the window must be relaunched`)
+    }
+    throw error
+  }
   if (value.root !== realpathSync(cwd) || !/^ses_[A-Za-z0-9]+$/.test(value.sessionID)) {
     throw new Error('MiMo bridge session scope mismatch')
   }

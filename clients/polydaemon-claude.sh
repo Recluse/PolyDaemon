@@ -95,7 +95,12 @@ unset CLAUDE_CODE_ENTRYPOINT
 #
 # Windows started outside this launcher (Zed's external agent starts claude
 # itself) get no uid, so consumers must keep their fallbacks.
-if [ -z "${TG_WINDOW_UID:-}" ]; then
+# A uid in the environment is NOT reused by default: a window started from
+# another window's shell inherits that window's uid, and two live windows with
+# one uid cannot be told apart (the bot then refuses to treat either as that
+# window). Only an explicit relaunch of the same window keeps it, by also
+# setting TG_WINDOW_UID_KEEP=1.
+if [ "${TG_WINDOW_UID_KEEP:-}" != "1" ] || [ -z "${TG_WINDOW_UID:-}" ]; then
   if command -v uuidgen >/dev/null 2>&1; then
     TG_WINDOW_UID="$(uuidgen)"
   else
@@ -103,6 +108,7 @@ if [ -z "${TG_WINDOW_UID:-}" ]; then
   fi
 fi
 export TG_WINDOW_UID
+unset TG_WINDOW_UID_KEEP   # not inherited by anything this window starts
 
 # --continue only when this workspace already has a session on THIS machine —
 # claude errors out on --continue with nothing to continue (a freshly copied

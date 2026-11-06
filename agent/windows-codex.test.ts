@@ -15,3 +15,32 @@ test('Windows standalone guard distinguishes managed remote UI and matching work
   expect(isCodexTuiCommand('node /work/codex-adapter/server.js')).toBe(false)
   expect(isCodexTuiCommand('codex "explain sandbox"')).toBe(true)
 })
+
+test('management subcommands after global options are not standalone UIs', () => {
+  expect(isCodexTuiCommand('codex.exe resume saved-thread --remote ws://127.0.0.1:3210')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe -c telemetry=false app-server')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe --enable feature --config "key=some value" app-server')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe --config=key=value sandbox -- node kernel.js')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe -c app-server resume')).toBe(true)
+  expect(isCodexTuiCommand('codex.exe "explain app-server"')).toBe(true)
+  expect(isCodexTuiCommand('codex.exe -- "app-server"')).toBe(true)
+  expect(isCodexTuiCommand('codex.exe "explain --remote usage"')).toBe(true)
+  expect(standaloneWindowsTui([{ ProcessId: 9392, CommandLine: 'codex.exe -c telemetry=false app-server' }], 'C:\\Work\\infra-win')).toBeNull()
+  // Quoted options and the remaining non-interactive subcommands (p20).
+  expect(isCodexTuiCommand('codex.exe "--config" "telemetry=false" app-server')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe resume "--remote" "ws://127.0.0.1:3210"')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe e "summarize this repo"')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe exec-server')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe plugin list')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe debug app-server')).toBe(false)
+  expect(isCodexTuiCommand('codex.exe resume --last')).toBe(true)
+  expect(isCodexTuiCommand('codex.exe fork')).toBe(true)
+  expect(isCodexTuiCommand('codex.exe --no-daemon Help')).toBe(true)
+  expect(isCodexTuiCommand('codex.exe Exec')).toBe(true)
+  // Without argument boundaries (macOS ps), a prompt that starts with a
+  // subcommand word is not trusted as that subcommand (candidate-v6 list only).
+  expect(isCodexTuiCommand('codex help me fix tests', false)).toBe(true)
+  expect(isCodexTuiCommand('codex plugin list', false)).toBe(true)
+  expect(isCodexTuiCommand('codex app-server --listen ws://127.0.0.1:3210', false)).toBe(false)
+  expect(isCodexTuiCommand('codex exec do something', false)).toBe(false)
+})

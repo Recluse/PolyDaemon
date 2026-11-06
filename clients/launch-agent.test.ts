@@ -47,6 +47,16 @@ test('HTTP launch selects the exact agent/mode; shell dispatch never opens a rea
         expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual(['shared', cwd, agent, fresh ? 'new' : 'resume'])
       }
     }
+    // /restart pins the window's own Codex thread; anything else is refused.
+    expect((await (await fetch(`${url}/health`)).json()).thread_resume).toBe(true)
+    if (existsSync(receipt)) rmSync(receipt)
+    expect((await post({ name: 'shared', cwd, agent: 'codex', thread_id: 'thr-0001' })).status).toBe(200)
+    for (let i = 0; i < 100 && !existsSync(receipt); i++) await Bun.sleep(25)
+    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual(['shared', cwd, 'codex', 'thread:thr-0001'])
+    for (const bad of [{ agent: 'claude', thread_id: 'thr-0001' }, { agent: 'codex', thread_id: 'thr-0001', new_session: true },
+      { agent: 'codex', thread_id: 'x; rm -rf ~' }, { agent: 'codex', thread_id: 7 }]) {
+      expect((await post({ name: 'shared', cwd, ...bad })).status).toBe(400)
+    }
     writeFileSync(runner, '#!/bin/bash\necho "PowerShell rejected Agent" >&2\nexit 7\n')
     const failure = await post({ name: 'shared', cwd, agent: 'codex' })
     expect(failure.status).toBe(502)
@@ -67,6 +77,17 @@ test('HTTP launch selects the exact agent/mode; shell dispatch never opens a rea
       const args = readFileSync(receipt, 'utf8')
       expect(args).toContain(`bash ./polydaemon-${agent}.sh new`)
       if (agent !== 'claude') expect(args).toContain(`_project-${agent}`)
+    }
+    const pinned = Bun.spawnSync(['bash', resolve(import.meta.dir, 'launch-ws.sh'), 'shared', cwd, 'codex', 'thread:thr-0001'], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TG_MAC_TERMINAL: 'tmux', LAUNCH_RECEIPT: receipt },
+    })
+    expect(pinned.exitCode).toBe(0)
+    expect(readFileSync(receipt, 'utf8')).toContain('bash ./polydaemon-codex.sh resume thr-0001')
+    for (const [agent, mode] of [['claude', 'thread:thr-0001'], ['codex', 'thread:a b'], ['codex', 'thread:$(id)']]) {
+      const refused = Bun.spawnSync(['bash', resolve(import.meta.dir, 'launch-ws.sh'), 'shared', cwd, agent, mode], {
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TG_MAC_TERMINAL: 'tmux', LAUNCH_RECEIPT: receipt },
+      })
+      expect(refused.exitCode).toBe(2)
     }
   } finally {
     child.kill('SIGTERM')

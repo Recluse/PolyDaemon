@@ -30,6 +30,8 @@ export interface LocalRow {
   parent_pid: number
   started_at: string
   heartbeat_at: number // unix seconds
+  /** Codex plugin's per-process window id (channel-plugin/src/codex-window.ts). */
+  codex_window_id?: string
 }
 
 export function readRegistry(): Record<string, LocalRow> {
@@ -39,6 +41,19 @@ export function readRegistry(): Record<string, LocalRow> {
   } catch {
     return {} // missing / unreadable / half-written → empty, never throw
   }
+}
+
+/** Like readRegistry, but an unreadable or corrupt file THROWS: a caller
+ *  proving that a window is dead must not mistake "cannot read" for "none". */
+export function readRegistryStrict(): Record<string, LocalRow> {
+  let raw: string
+  try { raw = readFileSync(REGISTRY_PATH, 'utf8') } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return {}
+    throw new Error(`local registry unreadable: ${e}`)
+  }
+  const obj = JSON.parse(raw)
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('local registry is not an object')
+  return obj
 }
 
 export function pidAlive(pid: number): boolean {

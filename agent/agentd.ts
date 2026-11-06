@@ -19,7 +19,8 @@ import { scanOrphans } from './orphans.ts'
 import { TranscriptTailer, readTranscript, type AgentEvent } from './transcripts.ts'
 import { launchWindow, type LaunchRequest } from './launch.ts'
 import { listTree, readProjectFile } from './files.ts'
-import { ensureAppServer, stopAppServer, deliverToCodex, codexStatus, lastThreadFor } from './codex.ts'
+import { migrateBindingsStore, validWindowId } from './codex-bindings.ts'
+import { ensureAppServer, stopAppServer, deliverToCodex, codexStatus, lastThreadFor, threadForWindow, ThreadChoiceRefused } from './codex.ts'
 
 export const VERSION = '0.1.0'
 
@@ -268,6 +269,14 @@ const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Headers': 'Authorization, Content-Type',
 }
 
+/** The plugin's self-reported pid (X-Codex-Window-Pid). agentd records it
+ *  with its OWN start-token lookup at bind time; it is not authenticated
+ *  beyond the shared bearer token. */
+function windowPid(req: Request): number | undefined {
+  const v = Number(req.headers.get('x-codex-window-pid'))
+  return Number.isInteger(v) && v > 1 ? v : undefined
+}
+
 async function route(
   req: Request,
   srv: Parameters<NonNullable<Parameters<typeof Bun.serve<WsData>>[0]['fetch']>>[1],
@@ -291,12 +300,14 @@ async function route(
     return handleResolve(req)
   }
   if (req.method === 'POST' && url.pathname === '/v1/codex/deliver') {
-    let body: { cwd?: string; text?: string }
+    let body: { cwd?: string; text?: string; window_id?: string }
     try { body = await req.json() as typeof body } catch { return new Response('Bad JSON', { status: 400 }) }
     if (!body.cwd || !body.text) return Response.json({ ok: false, reason: 'cwd and text required' }, { status: 400 })
     try {
-      const r = await deliverToCodex(body.cwd, body.text)
-      log(`codex deliver cwd=${body.cwd}: ${r.ok ? `${r.mode} -> ${r.thread_id}` : `refused: ${r.reason}`}`)
+      // The window secret comes in a header (never in a logged URL or body echo).
+      const r = await deliverToCodex(body.cwd, body.text, typeof body.window_id === 'string' ? body.window_id : undefined,
+        req.headers.get('x-codex-window-secret') ?? undefined, windowPid(req))
+      log(`codex deliver cwd=${body.cwd} window=${body.window_id ?? '-'}: ${r.ok ? `${r.mode} -> ${r.thread_id}` : `refused: ${r.reason}`}`)
       return Response.json(r, { status: r.ok ? 200 : 409 })
     } catch (e) {
       return Response.json({ ok: false, reason: String(e) }, { status: 502 })
@@ -309,7 +320,30 @@ async function route(
     const cwd = url.searchParams.get('cwd') ?? ''
     if (!cwd) return Response.json({ ok: false, reason: 'cwd required' }, { status: 400 })
     try {
-      return Response.json({ ok: true, thread_id: await lastThreadFor(cwd) })
+      return Response.json({ ok: true, thread_id: await lastThreadFor(cwd, url.searchParams.get('window_id') ?? undefined,
+        url.searchParams.get('reserve') !== '0') })
+    } catch (e) {
+      // Ambiguous / bound-but-missing: the launcher must not start fresh or guess.
+      if (e instanceof ThreadChoiceRefused) return Response.json({ ok: false, reason: e.message, code: e.code }, { status: 409 })
+      return Response.json({ ok: false, reason: String(e) }, { status: 502 })
+    }
+  }
+  // The thread bound to a window (resolving the binding on first use). The
+  // plugin reports it to the bot so /restart resumes exactly this thread.
+  if (req.method === 'GET' && url.pathname === '/v1/codex/binding') {
+    const cwd = url.searchParams.get('cwd') ?? ''
+    const windowId = url.searchParams.get('window_id') ?? ''
+    if (!cwd || !validWindowId(windowId) || !req.headers.get('x-codex-window-secret')) {
+      return Response.json({ ok: false, reason: 'cwd, a valid window_id and the window secret are required' }, { status: 400 })
+    }
+    try {
+      const r = await threadForWindow(cwd, windowId, req.headers.get('x-codex-window-secret') ?? undefined, windowPid(req))
+      if (!r.ok) return Response.json({ ok: false, reason: r.reason, code: r.code }, { status: 409 })
+      // Only a persisted binding counts: /restart must not pin a guess.
+      if (r.binding !== 'bound' && r.binding !== 'probed') {
+        return Response.json({ ok: false, reason: 'this window is not bound to a thread', code: 'unbound' }, { status: 409 })
+      }
+      return Response.json({ ok: true, thread_id: r.thread?.id ?? null, binding: r.binding })
     } catch (e) {
       return Response.json({ ok: false, reason: String(e) }, { status: 502 })
     }
@@ -390,6 +424,14 @@ try {
 }
 
 log(`PolyDaemon agent v${VERSION} listening on ${cfg.bind_host}:${cfg.port} (machine_id=${cfg.machine_id})`)
+
+// Once, before any Codex delivery: import the older bindings store. A refusal
+// keeps agentd up (stopping it would take the app-server down) but every
+// binding decision refuses with this reason until an operator settles it.
+try {
+  const blocked = migrateBindingsStore()
+  if (blocked) log(`codex bindings: ${blocked}`)
+} catch (e) { log(`codex bindings: migration failed: ${e}`) }
 
 // Codex adapter: own the app-server so TUIs can attach (codex --remote) and
 // the bot's inbound can be pushed into threads (см. /v1/codex/deliver).
