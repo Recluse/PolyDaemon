@@ -1,0 +1,14 @@
+[Unit]
+Description=PolyDaemon router failover controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/bot-api/polyd_failover.py --config %h/bot-api/failover.json
+Restart=always
+RestartSec=5
+# The control endpoint talks to the peer over the mesh; nothing else is needed.
+
+[Install]
+WantedBy=default.target

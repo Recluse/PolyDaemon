@@ -1,0 +1,10 @@
+[Unit]
+Description=Replicate router state to the standby host
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

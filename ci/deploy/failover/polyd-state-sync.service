@@ -1,0 +1,7 @@
+[Unit]
+Description=Push a router state snapshot to the standby host
+# Runs on the ACTIVE host only; the reserve's copy is the target of the push.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/bot-api/polyd_state_sync.py push %h/.tg-copilot-bridge --host RESERVE_HOST --remote-root %h/bot-api/snapshots --keep 12
