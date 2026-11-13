@@ -16,6 +16,10 @@ Launchers use `polydaemon-<agent>`. Some integration IDs retain the former
 
 ## What it does
 
+- **Local terminal window menu:** the optional [`pd` utility](clients/pd-menu/README.md)
+  discovers workspace launchers and starts or attaches to local tmux windows.
+  Available on macOS and Linux; it does not require another daemon.
+
 - **A Claude Code window you can reach from your phone.** Send a message, it goes
   to the window you picked; the reply comes back. The conversation lives in the
   window's own Claude Code session.

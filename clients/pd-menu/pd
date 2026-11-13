@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# pd: menu for PolyDaemon windows on this host. Starts agent windows in
+# workspaces under ~/Work and attaches to the ones already running in tmux.
+#
+#   pd                         interactive menu (dialog / whiptail / plain)
+#   pd ls                      running windows, one per line
+#   pd ws                      discovered workspaces and their agents
+#   pd attach <ws> [agent]     attach (agent defaults to claude)
+#   pd start <ws> [agent] [new]  start detached, then attach; resume by default
+#   pd help
+#
+# <ws> is a folder name (SAN), a path relative to ~/Work, or an absolute path.
+# Layout: lib/ (core, ui, workspaces, sessions), agents/*.sh (one file per agent,
+# add a file to support a new one), theme/dialogrc. See README.md.
+set -uo pipefail
+
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  printf '%s\n' 'pd needs Bash 4+; on macOS put Homebrew bash before /bin in PATH.' >&2
+  exit 1
+fi
+
+PD_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+for _m in core ui workspaces sessions; do
+  # shellcheck source=/dev/null
+  . "$PD_HOME/lib/$_m.sh"
+done
+unset _m
+
+pd_require tmux find awk
+pd_load_agents
+
+# ---- menus -------------------------------------------------------------------
+
+# Menu tags are short numbers (dialog sizes the list by tag width even with
+# --no-tags); MENU_SESS maps them back to session names.
+declare -A MENU_SESS
+
+menu_main() {
+  local -a items=()
+  MENU_SESS=()
+  local name agent dir att idle cmd dead n=0 text
+  while IFS=$PD_FS read -r name agent dir att idle _ cmd dead; do
+    [ -n "$name" ] || continue
+    if [ -n "$agent" ]; then
+      n=$((n + 1)); MENU_SESS[$n]=$name
+      items+=("$n" "$(printf '%-20s %-12s %s' "$(pd_rel "$dir")" "${PD_AGENT_LABEL[$agent]}" \
+        "$(pd_session_status "$att" "$idle" "$cmd" "$dead")")")
+    else
+      n=$((n + 1)); MENU_SESS[$n]=$name
+      items+=("$n" "$(printf '%-20s %-12s %s' "$name" 'tmux' \
+        "$(pd_session_status "$att" "$idle" "$cmd" "$dead")")")
+    fi
+  done < <(pd_sessions | sort -t"$PD_FS" -k3,3 -k2,2)
+  [ $n -gt 0 ] && items+=("-" "────────────────────────────────────────")
+  items+=("+" "＋ Запустить окно…" "r" "↻ Обновить" "q" "✕ Выход")
+  if [ $n -eq 0 ]; then text="Запущенных окон нет."
+  else text="Запущено: $n. Enter подключает; отключиться от окна: Ctrl-b d."; fi
+  ui_menu 'Окна' "$text" "${items[@]}"
+}
+
+menu_session() {
+  local s=$1 line att agent dir
+  line=$(pd_sessions | awk -F"$PD_FS" -v s="$s" '$1 == s')
+  [ -n "$line" ] || { ui_msg 'Окно' "Сессии $s уже нет."; return; }
+  IFS=$PD_FS read -r _ agent dir att _ <<<"$line"
+  local -a items=(a 'Подключиться')
+  [ "$att" -gt 0 ] && items+=(x 'Подключиться, отключив другие терминалы (подгонит размер)')
+  items+=(k 'Остановить окно…')
+  local ch
+  ch=$(ui_menu "$s" "$(pd_rel "$dir") · ${agent:+${PD_AGENT_LABEL[$agent]}}" "${items[@]}") || return
+  case $ch in
+    a) do_attach "$s" 0 ;;
+    x) do_attach "$s" 1 ;;
+    k) ui_yesno 'Остановить окно' \
+         "Закрыть tmux-сессию $s?\n\nАгент в ней будет завершён. Claude и Codex потом можно продолжить через «Запустить → продолжить последнюю сессию»." \
+         && pd_kill "$s" ;;
+  esac
+}
+
+menu_launch() {
+  local -a items=() dirs=()
+  local d id mark ch agents
+  while IFS= read -r d; do
+    agents=""
+    while IFS= read -r id; do
+      mark='○'; [ -n "$(pd_sessions_for "$id" "$d")" ] && mark='●'
+      agents+="$mark$id "
+    done < <(pd_ws_agents "$d")
+    dirs+=("$d")
+    items+=("${#dirs[@]}" "$(printf '%-24s %s' "$(pd_rel "$d")" "$agents")")
+  done < <(pd_ws_list)
+  [ ${#items[@]} -gt 0 ] || { ui_msg 'Запуск' "В $PD_WORK_DIR не найдено папок со скриптами polydaemon-*.sh."; return; }
+  ch=$(ui_menu 'Запуск: папка' "Папки из $PD_WORK_DIR (● окно агента уже запущено)." "${items[@]}") || return
+  menu_agent "${dirs[$((ch - 1))]}"
+}
+
+menu_agent() {
+  local ws=$1 id s running ch
+  local -a items=()
+  while IFS= read -r id; do
+    running=$(pd_sessions_for "$id" "$ws" | paste -sd, -)
+    if [ -n "$running" ]; then items+=("$id" "$(printf '%-12s ● уже запущено: %s' "${PD_AGENT_LABEL[$id]}" "$running")")
+    else items+=("$id" "$(printf '%-12s ○' "${PD_AGENT_LABEL[$id]}")"); fi
+  done < <(pd_ws_agents "$ws")
+  id=$(ui_menu 'Запуск: агент' "$(pd_rel "$ws")" "${items[@]}") || return
+
+  items=()
+  local -a sess=()
+  while IFS= read -r s; do sess+=("$s"); items+=("${#sess[@]}" "Подключиться к запущенному $s"); done < <(pd_sessions_for "$id" "$ws")
+  if [ ${#items[@]} -eq 0 ]; then items+=(resume 'Продолжить последнюю сессию папки')
+  else items+=(resume 'Ещё одно окно, продолжить последнюю сессию (тот же тред!)'); fi
+  items+=(new 'Новая чистая сессия')
+  ch=$(ui_menu "${PD_AGENT_LABEL[$id]} · $(pd_rel "$ws")" 'Что сделать?' "${items[@]}") || return
+  case $ch in
+    [0-9]*) do_attach "${sess[$((ch - 1))]}" 0 ;;
+    resume|new) do_start "$id" "$ws" "$ch" ;;
+  esac
+}
+
+# ---- actions -------------------------------------------------------------------
+
+do_attach() {
+  pd_attach "$1" "${2:-0}" || { ui_msg 'Ошибка' "Не удалось подключиться к $1."; return 1; }
+  # switch-client returns at once; the menu has done its job in this pane.
+  [ -n "${TMUX:-}" ] && [ -z "$PD_TMUX_SOCKET" ] && exit 0
+  return 0
+}
+
+do_start() {
+  local id=$1 ws=$2 mode=$3 s err
+  ui_info 'Запуск' "${PD_AGENT_LABEL[$id]} в $(pd_rel "$ws") ($mode)…"
+  err=$( { s=$(pd_start "$id" "$ws" "$mode"); printf '%s' "$s" > "$PD_RUN/started"; } 2>&1 )
+  s=$(cat "$PD_RUN/started" 2>/dev/null); rm -f "$PD_RUN/started"
+  if [ -z "$s" ]; then
+    ui_msg 'Окно не запустилось' "Лаунчер завершился в первые ${PD_START_CHECK_SEC} с.\n\n${err:-нет вывода}"
+    return 1
+  fi
+  do_attach "$s" 0
+}
+
+interactive() {
+  ui_init
+  [ -t 0 ] && [ -t 1 ] || pd_die "menu needs a terminal; see 'pd help' for commands"
+  PD_RUN=$(mktemp -d "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/pd-menu.XXXXXX") || exit 1
+  trap 'rm -rf "$PD_RUN"' EXIT
+  local ch
+  while :; do
+    # Not $(menu_main): MENU_SESS must survive, so no subshell.
+    menu_main > "$PD_RUN/choice" || break
+    ch=$(cat "$PD_RUN/choice")
+    case $ch in
+      [0-9]*) menu_session "${MENU_SESS[$ch]}" ;;
+      +)   menu_launch ;;
+      r|-) ;;
+      q)   break ;;
+    esac
+  done
+  clear
+}
+
+# ---- command line ----------------------------------------------------------------
+
+cmd_ls() {
+  local name agent dir att idle cmd dead
+  pd_sessions | while IFS=$PD_FS read -r name agent dir att idle _ cmd dead; do
+    printf '%-24s %-9s %-22s %s\n' "$name" "${agent:-tmux}" "$(pd_rel "$dir")" \
+      "$(pd_session_status "$att" "$idle" "$cmd" "$dead")"
+  done
+}
+
+cmd_ws() {
+  local d
+  pd_ws_list | while IFS= read -r d; do
+    printf '%-24s %s\n' "$(pd_rel "$d")" "$(pd_ws_agents "$d" | paste -sd' ' -)"
+  done
+}
+
+cmd_attach() {
+  local ws agent=${2:-claude} dir s
+  [ -n "${1:-}" ] || pd_die "usage: pd attach <ws> [agent]"
+  pd_agent_known "$agent" || pd_die "unknown agent $agent (${PD_AGENTS[*]})"
+  dir=$(pd_ws_resolve "$1") || exit 1
+  s=$(pd_sessions_for "$agent" "$dir" | head -n1)
+  [ -n "$s" ] || pd_die "no running $agent window in $(pd_rel "$dir"); try: pd start $1 $agent"
+  pd_attach "$s"
+}
+
+cmd_start() {
+  local agent=${2:-claude} mode=${3:-resume} dir s
+  [ -n "${1:-}" ] || pd_die "usage: pd start <ws> [agent] [new]"
+  pd_agent_known "$agent" || pd_die "unknown agent $agent (${PD_AGENTS[*]})"
+  case $mode in resume|new) ;; *) pd_die "mode is resume or new" ;; esac
+  dir=$(pd_ws_resolve "$1") || exit 1
+  if [ "$mode" = resume ] && s=$(pd_sessions_for "$agent" "$dir" | head -n1) && [ -n "$s" ]; then
+    printf 'pd: already running as %s, attaching\n' "$s" >&2
+  else
+    s=$(pd_start "$agent" "$dir" "$mode") || pd_die "window did not start"
+  fi
+  [ -t 0 ] && [ -t 1 ] && [ "${PD_NO_ATTACH:-0}" != 1 ] && pd_attach "$s"
+  printf '%s\n' "$s"
+}
+
+case "${1:-menu}" in
+  menu)         interactive ;;
+  ls|list)      cmd_ls ;;
+  ws)           cmd_ws ;;
+  attach|a)     shift; cmd_attach "$@" ;;
+  start|s)      shift; cmd_start "$@" ;;
+  help|-h|--help) sed -n '2,15p' "$PD_HOME/pd" | sed 's/^# \{0,1\}//' ;;
+  *)            pd_die "unknown command '$1'; see: pd help" ;;
+esac
